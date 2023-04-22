@@ -163,6 +163,7 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
     # detect where the GPS data chunks are in the EM31 data file
     gps_starts = [idx for idx, line in enumerate(r31_dat) if line.startswith("@")]
     gps_ends = [idx for idx, line in enumerate(r31_dat) if line.startswith("!")]
+    assert len(gps_starts) == len(gps_ends)
     # these can vary in length but are no longer than 6
     gps_data = [r31_dat[start:end] for start, end in zip(gps_starts, gps_ends)]
     gps_times = [int(r31_dat[end : end + 1][0].split(" ")[-1]) for end in gps_ends]
@@ -198,11 +199,16 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
             for tstamp, msg in zip(gga_times, gga_msgs)
         ]
     )
+    # edge cases where some gps message contents are empty
+    # nsats
+    gga_data[:, 3] = np.where(gga_data[:, 3] == '', '00', gga_data[:, 3])
+    # hdop
+    gga_data[:, 4] = np.where(gga_data[:, 4] == '', np.nan, gga_data[:, 4])
     gps_df = pd.DataFrame(
         data={
             "time_sys": pd.Series(gga_data[:, 0]).astype("datetime64[ns]"),
             "time_gps": pd.Series(gga_data[:, 1]),
-            "fix": pd.Series(gga_data[:, 2]).astype(bool),
+            "fix": pd.Series(gga_data[:, 2]).astype("uint8"),
             "nsats": pd.Series(gga_data[:, 3]).astype("uint16"),
             "hdop": pd.Series(gga_data[:, 4]).astype("float32"),
             "alt": pd.Series(gga_data[:, 5]).astype("float32"),
@@ -244,8 +250,21 @@ def thickness(em31_df, inst_height, coeffs=HAAS_2010):
 
 
 if __name__ == "__main__":
-    testfile = "./data/em31/042509A.R31"
-    df = read_r31(testfile)
-    df = thickness(df, 0.15)
-    print(df)
-    df.to_csv("./data/output/042509A.ttem.csv", index=False)
+    '''
+    If this file is run, attempt to process everything in ./data/em31/
+    '''
+    from pathlib import Path
+
+    src_dir = Path("./data/em31")
+    dst_dir = Path("./data/output")
+    src_dir.mkdir(exist_ok=True)
+    dst_dir.mkdir(exist_ok=True)
+    for data_file in src_dir.glob("???????*.R31"):
+        target = dst_dir / f"{data_file.stem}.ttem.csv"
+        if target.exists():
+            continue
+        data_size_MB = data_file.stat().st_size / 1024**2
+        print(f"Processing {data_file.as_posix()} (~{data_size_MB:.2f} MB)")
+        df = read_r31(data_file)
+        df = thickness(df, 0.15)
+        df.to_csv(target, index=False, na_rep='NaN')

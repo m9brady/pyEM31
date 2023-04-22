@@ -6,10 +6,14 @@ Many thanks to Christian Haas for the help with this
 """
 
 from datetime import datetime, timedelta
+import logging
 
 import numpy as np
 import pandas as pd
 import pynmea2
+
+LOGGER = logging.getLogger('pyem31')
+LOGGER.addHandler(logging.NullHandler())
 
 # TODO: Define each element in this list of constants
 HAAS_2010 = [0.98229, 13.404, 1366.4]
@@ -47,7 +51,7 @@ def read_r31(filename, gps_tol=1, encoding="windows-1252"):
         h_component = int(header[18:19])  # 0 = Both, 1 = Iphase
         h_computer = int(header[22:23])  # no info on what this is
     else:
-        print("Error: First line is not a header")
+        LOGGER.error("First line is not a header")
         return 1
     # Get file data fields
     file_meta = r31_dat[1]
@@ -55,7 +59,7 @@ def read_r31(filename, gps_tol=1, encoding="windows-1252"):
         h_file = file_meta[2:11].strip()
         h_time = float(file_meta[13:18])
     else:
-        print("Error: Data fields missing")
+        LOGGER.error("Data fields missing")
         return 1
     # Get file start stamp
     time_meta = r31_dat[5]
@@ -63,7 +67,7 @@ def read_r31(filename, gps_tol=1, encoding="windows-1252"):
         h_date = time_meta[1:9]
         h_time = time_meta[10:18]
     else:
-        print("Error: Start stamp missing")
+        LOGGER.error("Start stamp missing")
         return 1
     # Get timer relation
     epoch_meta = r31_dat[6]
@@ -147,10 +151,12 @@ def parse_gps(gps_data, idx_of_em31):
     try:
         gps_msg = pynmea2.parse(gps_data)
     except pynmea2.ChecksumError:
-        print(f'GPS NMEA0183 checksum error with line {idx_of_em31}: "{gps_data}"')
+        LOGGER.warning("NMEA0183 checksum error with line %d" % idx_of_em31)
+        LOGGER.debug("%r" % gps_data)
         return
     except pynmea2.ParseError:
-        print(f'GPS NMEA0183 parse error with line {idx_of_em31}: "{gps_data}"')
+        LOGGER.warning("NMEA0183 parse error with line %d" % idx_of_em31)
+        LOGGER.debug("%r" % gps_data)
         return
     return gps_msg
 
@@ -255,6 +261,14 @@ if __name__ == "__main__":
     '''
     from pathlib import Path
 
+    console_log = logging.StreamHandler()
+    console_log.setFormatter(logging.Formatter(
+         '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
+         datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    LOGGER.addHandler(console_log)
+    LOGGER.setLevel(logging.INFO)
+
     src_dir = Path("./data/em31")
     dst_dir = Path("./data/output")
     src_dir.mkdir(exist_ok=True)
@@ -264,7 +278,8 @@ if __name__ == "__main__":
         if target.exists():
             continue
         data_size_MB = data_file.stat().st_size / 1024**2
-        print(f"Processing {data_file.as_posix()} (~{data_size_MB:.2f} MB)")
+        LOGGER.info("Processing %s (~%.2f) MB" % (data_file.as_posix(), data_size_MB))
         df = read_r31(data_file)
         df = thickness(df, 0.15)
         df.to_csv(target, index=False, na_rep='NaN')
+        LOGGER.info("Saved to CSV: %s" % target.as_posix())

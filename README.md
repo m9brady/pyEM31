@@ -5,6 +5,7 @@ This codebase was initiated by the late Dr. Josh King at Environment and Climate
 ## The EM31 Instrument
 
 ...EM31 blurb goes here with picture(s)...
+http://www.geonics.com/html/em31-mk2.html
 
 ## What this code does
 This codebase takes the raw logger output from the EM31 and converts it into a pandas DataFrame for further analysis.

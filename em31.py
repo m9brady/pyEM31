@@ -11,11 +11,14 @@ import numpy as np
 import pandas as pd
 import pynmea2
 
-# Constants
+# TODO: Define each element in this list of constants
 HAAS_2010 = [0.98229, 13.404, 1366.4]
 
 
 def text_to_bits(text, encoding="windows-1252", errors="surrogatepass"):
+    """
+    Convert instrument data to something useful
+    """
     bits = bin(int.from_bytes(text.encode(encoding, errors), "big"))[2:]
     return bits.zfill(8 * ((len(bits) + 7) // 8))
 
@@ -185,7 +188,7 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
                 msg.timestamp,
                 msg.gps_qual,
                 msg.num_sats,
-                msg.horizontal_dil,
+                msg.horizontal_dil,  # Horizontal Dilution of Precision (HDOP)
                 msg.altitude,
                 msg.latitude,
                 msg.lat_dir,
@@ -209,7 +212,8 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
             "lon_dir": pd.Series(gga_data[:, 9]).astype(pd.StringDtype()),
         }
     )
-    # isolate only the records with 0 < fix < 6
+    # isolate only the records with 0 < gps_quality < 6
+    # different types of GGA quality indicators: https://receiverhelp.trimble.com/alloy-gnss/en-us/NMEA-0183messages_GGA.html
     subset = gps_df.loc[(gps_df["fix"] > 0) & (gps_df["fix"] < 6)]
     return subset
 
@@ -219,13 +223,29 @@ def thickness(em31_df, inst_height, coeffs=HAAS_2010):
     Estimate total thickness from apparent conductivity
         input:
             em31_df: pyEM31 dataframe
-            inst_height: height of the instrument above the snow surface
+            inst_height: height of the instrument above the snow surface (meters?)
             coeffs: 3 element list of retrieval coefficients
         output:
             em31_df: pyEM31 dataframe with total thickness
+
+    TODO: instead of passing dataframe and modifying, take apparent conductivity as input and produce
+    thickness as output
+    TODO: instead of list of coefficients, split into separate variables for readability
     """
-    em31_df["ttem"] = (
-        -1 / coeffs[0] * np.log((em31_df["appcond"] - coeffs[1]) / coeffs[2])
-    )
+    # modify the instrument measurements using the coefficients
+    mod_app_cond = (em31_df["appcond"] - coeffs[1]) / coeffs[2]
+    # fill negative values with np.nan to avoid np.log warnings
+    mod_app_cond[mod_app_cond < 0] = np.nan
+    # estimate total thickness from instrument
+    em31_df["ttem"] = -1 / coeffs[0] * np.log(mod_app_cond)
+    # account for instrument height above snow surface
     em31_df["ttem"] -= inst_height
     return em31_df
+
+
+if __name__ == "__main__":
+    testfile = "./data/em31/042509A.R31"
+    df = read_r31(testfile)
+    df = thickness(df, 0.15)
+    print(df)
+    df.to_csv("./data/output/042509A.ttem.csv", index=False)

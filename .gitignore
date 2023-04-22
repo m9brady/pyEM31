@@ -155,3 +155,4 @@ cython_debug/
 *.R31
 *.csv
 *.dat
+*.gpkg

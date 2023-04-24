@@ -5,14 +5,14 @@ J.King 2022
 Many thanks to Christian Haas for the help with this
 """
 
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
 import pynmea2
 
-LOGGER = logging.getLogger('pyem31')
+LOGGER = logging.getLogger("pyem31")
 LOGGER.addHandler(logging.NullHandler())
 
 # TODO: Define each element in this list of constants
@@ -81,7 +81,7 @@ def read_r31(filename, gps_tol=1, encoding="windows-1252"):
     # Merge based on time
     em31_merged = pd.merge_asof(
         meas_df,
-        gps_df[["lat", "lon", "time_gps", "time_sys"]],
+        gps_df,
         left_on="time_ds",
         right_on="time_sys",
         direction="nearest",
@@ -172,8 +172,26 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
     assert len(gps_starts) == len(gps_ends)
     # these can vary in length but are no longer than 6
     gps_data = [r31_dat[start:end] for start, end in zip(gps_starts, gps_ends)]
-    gps_times = [int(r31_dat[end : end + 1][0].split(" ")[-1]) for end in gps_ends]
+    # detect where EM31 measurements have been logged inside GPS messages
+    bad_logs_idx = [
+        gps_data.index(data)
+        for data in gps_data
+        if any([line.startswith("T") for line in data])
+    ]
+    LOGGER.debug(
+        "Detected %d instances where EM31 data overrides GPS data" % len(bad_logs_idx)
+    )
+    for bad_idx in bad_logs_idx:
+        em31_line_idx = [
+            gps_data[bad_idx].index(line)
+            for line in gps_data[bad_idx]
+            if line.startswith("T")
+        ]
+        # remove the em31 data from gps_data by pop-from-list
+        for line_idx in em31_line_idx:
+            _ = gps_data[bad_idx].pop(line_idx)
     assert all([len(data) <= 6 for data in gps_data])
+    gps_times = [int(r31_dat[end : end + 1][0].split(" ")[-1]) for end in gps_ends]
     # drop the first character in each line and join the remainder chunks into 1 string
     gps_data_clean = ["".join([d[1:] for d in data]).strip() for data in gps_data]
     # extract NMEA0183 objects
@@ -181,7 +199,8 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
         parse_gps(clean_string, em31_idx)
         for clean_string, em31_idx in zip(gps_data_clean, gps_starts)
     ]
-    # we only want GGA NMEA messages apparently
+    # we only want GGA NMEA messages apparently (Time, position, and fix related data)
+    # https://receiverhelp.trimble.com/alloy-gnss/en-us/NMEA-0183messages_GGA.html
     gga_idx = [idx for idx in range(len(nmea)) if isinstance(nmea[idx], pynmea2.GGA)]
     gga_msgs = [nmea[idx] for idx in gga_idx]
     # need to add the gps_time to the epoch from EM31 header
@@ -205,11 +224,52 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
             for tstamp, msg in zip(gga_times, gga_msgs)
         ]
     )
+    # attempt to use RMC (Position, velocity and time) messages for the useful speed-over-ground/course-made-good
+    # https://receiverhelp.trimble.com/alloy-gnss/en-us/NMEA-0183messages_RMC.html
+    rmc_idx = [idx for idx in range(len(nmea)) if isinstance(nmea[idx], pynmea2.RMC)]
+    try:
+        assert len(rmc_idx) == len(gga_idx)
+        use_rmc = True
+    except AssertionError:
+        LOGGER.warning(
+            "N_RMC (%d) does not equal N_GGA (%d)" % (len(rmc_msgs), len(gga_msgs))
+        )
+        use_rmc = False
+    if use_rmc:
+        rmc_msgs = [nmea[idx] for idx in rmc_idx]
+        rmc_data = np.array(
+            [
+                (
+                    datetime(
+                        rmc_msg.datestamp.year,
+                        rmc_msg.datestamp.month,
+                        rmc_msg.datestamp.day,
+                        rmc_msg.timestamp.hour,
+                        rmc_msg.timestamp.minute,
+                        rmc_msg.timestamp.second,
+                        rmc_msg.timestamp.microsecond,
+                        tzinfo=timezone.utc,  # always UTC according to Trimble
+                    ),
+                    rmc_msg.status,
+                    rmc_msg.latitude,
+                    rmc_msg.lat_dir,
+                    rmc_msg.longitude,
+                    rmc_msg.lon_dir,
+                    rmc_msg.spd_over_grnd,  # sog, knots
+                    rmc_msg.true_course,  # cmg, degrees from TRUE NORTH
+                    rmc_msg.mag_variation,
+                    rmc_msg.mag_var_dir,
+                    rmc_msg.mode_indicator,
+                    rmc_msg.nav_status,
+                )
+                for rmc_msg in rmc_msgs
+            ]
+        )
     # edge cases where some gps message contents are empty
     # nsats
-    gga_data[:, 3] = np.where(gga_data[:, 3] == '', '00', gga_data[:, 3])
+    gga_data[:, 3] = np.where(gga_data[:, 3] == "", "00", gga_data[:, 3])
     # hdop
-    gga_data[:, 4] = np.where(gga_data[:, 4] == '', np.nan, gga_data[:, 4])
+    gga_data[:, 4] = np.where(gga_data[:, 4] == "", np.nan, gga_data[:, 4])
     gps_df = pd.DataFrame(
         data={
             "time_sys": pd.Series(gga_data[:, 0]).astype("datetime64[ns]"),
@@ -224,9 +284,15 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
             "lon_dir": pd.Series(gga_data[:, 9]).astype(pd.StringDtype()),
         }
     )
+    # return a subset of columns based on Josh's prior work
+    cols = ["lat", "lon", "time_gps", "time_sys"]
+    if use_rmc:
+        gps_df["sog"] = pd.Series(rmc_data[:, 6]).astype("float32")
+        gps_df["cmg"] = pd.Series(rmc_data[:, 7]).astype("float32")
+        cols.extend(["sog", "cmg"])
     # isolate only the records with 0 < gps_quality < 6
     # different types of GGA quality indicators: https://receiverhelp.trimble.com/alloy-gnss/en-us/NMEA-0183messages_GGA.html
-    subset = gps_df.loc[(gps_df["fix"] > 0) & (gps_df["fix"] < 6)]
+    subset = gps_df.loc[(gps_df["fix"] > 0) & (gps_df["fix"] < 6), cols]
     return subset
 
 
@@ -256,16 +322,18 @@ def thickness(em31_df, inst_height, coeffs=HAAS_2010):
 
 
 if __name__ == "__main__":
-    '''
+    """
     If this file is run, attempt to process everything in ./data/em31/
-    '''
+    """
     from pathlib import Path
 
     console_log = logging.StreamHandler()
-    console_log.setFormatter(logging.Formatter(
-         '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
-         datefmt="%Y-%m-%d %H:%M:%S"
-    ))
+    console_log.setFormatter(
+        logging.Formatter(
+            "%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
     LOGGER.addHandler(console_log)
     LOGGER.setLevel(logging.INFO)
 
@@ -278,8 +346,8 @@ if __name__ == "__main__":
         if target.exists():
             continue
         data_size_MB = data_file.stat().st_size / 1024**2
-        LOGGER.info("Processing %s (~%.2f) MB" % (data_file.as_posix(), data_size_MB))
+        LOGGER.info("Processing %s (~%.2f MB)" % (data_file.as_posix(), data_size_MB))
         df = read_r31(data_file)
         df = thickness(df, 0.15)
-        df.to_csv(target, index=False, na_rep='NaN')
+        df.to_csv(target, index=False, na_rep="NaN")
         LOGGER.info("Saved to CSV: %s" % target.as_posix())

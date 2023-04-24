@@ -14,21 +14,23 @@ This codebase takes the raw logger output from the EM31 and converts it into a p
 ## Quickstart
 
 ### Creating the runtime environment
-```console
-## assumes you have python3.10 installed
-## create the environment
+```zsh
+# assumes you have python3.10 installed
+# create the environment
 python3 -m venv .venv
-## activate the environment
-### linux
+
+# activate the environment
+## linux
 source ./.venv/bin/activate
-### windows
+## windows
 .\.venv\Scripts\activate
-## install requirements
+
+# install requirements
 python3 -m pip install -r requirements.txt
 ```
 
 ### Running the code
-```console
+```zsh
 python3 em31.py
 ```
 

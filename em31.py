@@ -241,28 +241,28 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
             [
                 (
                     datetime(
-                        rmc_msg.datestamp.year,
-                        rmc_msg.datestamp.month,
-                        rmc_msg.datestamp.day,
-                        rmc_msg.timestamp.hour,
-                        rmc_msg.timestamp.minute,
-                        rmc_msg.timestamp.second,
-                        rmc_msg.timestamp.microsecond,
+                        msg.datestamp.year,
+                        msg.datestamp.month,
+                        msg.datestamp.day,
+                        msg.timestamp.hour,
+                        msg.timestamp.minute,
+                        msg.timestamp.second,
+                        msg.timestamp.microsecond,
                         tzinfo=timezone.utc,  # always UTC according to Trimble
                     ),
-                    rmc_msg.status,
-                    rmc_msg.latitude,
-                    rmc_msg.lat_dir,
-                    rmc_msg.longitude,
-                    rmc_msg.lon_dir,
-                    rmc_msg.spd_over_grnd,  # sog, knots
-                    rmc_msg.true_course,  # cmg, degrees from TRUE NORTH
-                    rmc_msg.mag_variation,
-                    rmc_msg.mag_var_dir,
-                    rmc_msg.mode_indicator,
-                    rmc_msg.nav_status,
+                    msg.status,
+                    msg.latitude,
+                    msg.lat_dir,
+                    msg.longitude,
+                    msg.lon_dir,
+                    msg.spd_over_grnd,  # sog, knots
+                    msg.true_course,  # cmg, degrees from TRUE NORTH
+                    msg.mag_variation,
+                    msg.mag_var_dir,
+                    msg.mode_indicator,
+                    msg.nav_status,
                 )
-                for rmc_msg in rmc_msgs
+                for msg in rmc_msgs
             ]
         )
     # edge cases where some gps message contents are empty

@@ -232,7 +232,7 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
         use_rmc = True
     except AssertionError:
         LOGGER.warning(
-            "N_RMC (%d) does not equal N_GGA (%d)" % (len(rmc_msgs), len(gga_msgs))
+            "N_RMC (%d) does not equal N_GGA (%d)" % (len(rmc_idx), len(gga_msgs))
         )
         use_rmc = False
     if use_rmc:

@@ -6,10 +6,10 @@ This codebase was initiated by the late Dr. Josh King at Environment and Climate
 
 The Geonics EM31 sensor is designed to measure changes in conductivity through electromagnetic induction. Offered in two configurations (conventional EM31-MK2 and "short" EM31-SH), the device can be mounted on a trailer/toboggan and towed while traversing a given study area. Further information on the EM31 devices can be found at http://www.geonics.com/html/em31-mk2.html
 
-At ECCC, the EM31-SH version is used (pictured below, mounted to a toboggan) to detect changes in conductivity in sea ice in order to estimate total ice thickness for a given area.
+At ECCC, the EM31-SH version is used (pictured below, mounted on a toboggan) to detect changes in conductivity in sea ice in order to estimate total ice thickness for a given area.
 
 <p align="center">
-    <img src="assets/em31sh_eccc.jpg"  width=600>
+    <img src="assets/em31sh_eccc.jpg" width=600>
 </p>
 <p align="center">
     <i>Supplementary Figure 1 from Haas et. al (2017)</i>

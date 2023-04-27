@@ -182,7 +182,8 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
     ]
     if len(bad_logs_idx) != 0:
         LOGGER.debug(
-            "Detected %d instances where EM31 data overrides GPS data" % len(bad_logs_idx)
+            "Detected %d instances where EM31 data overrides GPS data"
+            % len(bad_logs_idx)
         )
         for bad_idx in bad_logs_idx:
             em31_line_idx = [
@@ -235,7 +236,8 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
         use_rmc = True
     except AssertionError:
         LOGGER.warning(
-            "n_RMC (%d) does not equal n_GGA (%d) -> omitting sog/cmg from output" % (len(rmc_idx), len(gga_msgs))
+            "n_RMC (%d) does not equal n_GGA (%d) -> omitting sog/cmg from output"
+            % (len(rmc_idx), len(gga_msgs))
         )
         use_rmc = False
     if use_rmc:
@@ -347,7 +349,7 @@ if __name__ == "__main__":
     for data_file in sorted(src_dir.glob("???????*.R31")):
         target = dst_dir / f"{data_file.stem}.ttem.csv"
         if target.exists():
-            LOGGER.info('Skipping existing file: %s' % target.as_posix())
+            LOGGER.info("Skipping existing file: %s" % target.as_posix())
             continue
         data_size_MB = data_file.stat().st_size / 1024**2
         LOGGER.info("Processing %s (~%.2f MB)" % (data_file.as_posix(), data_size_MB))

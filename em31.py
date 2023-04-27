@@ -15,7 +15,9 @@ import pynmea2
 LOGGER = logging.getLogger("pyem31")
 LOGGER.addHandler(logging.NullHandler())
 
-# TODO: Define each element in this list of constants
+# These coefficients for estimating ice thickness from measured apparent conductivity
+# are derived from Haas et. al (2017): http://dx.doi.org/10.1002/2017GL075434
+# Supplementary figure S2
 HAAS_2010 = [0.98229, 13.404, 1366.4]
 
 
@@ -170,7 +172,7 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
     gps_starts = [idx for idx, line in enumerate(r31_dat) if line.startswith("@")]
     gps_ends = [idx for idx, line in enumerate(r31_dat) if line.startswith("!")]
     assert len(gps_starts) == len(gps_ends)
-    # these can vary in length but are no longer than 6
+    # gps messages can vary in length but are no longer than 6
     gps_data = [r31_dat[start:end] for start, end in zip(gps_starts, gps_ends)]
     # detect where EM31 measurements have been logged inside GPS messages
     bad_logs_idx = [
@@ -178,18 +180,19 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
         for data in gps_data
         if any([line.startswith("T") for line in data])
     ]
-    LOGGER.debug(
-        "Detected %d instances where EM31 data overrides GPS data" % len(bad_logs_idx)
-    )
-    for bad_idx in bad_logs_idx:
-        em31_line_idx = [
-            gps_data[bad_idx].index(line)
-            for line in gps_data[bad_idx]
-            if line.startswith("T")
-        ]
-        # remove the em31 data from gps_data by pop-from-list
-        for line_idx in em31_line_idx:
-            _ = gps_data[bad_idx].pop(line_idx)
+    if len(bad_logs_idx) != 0:
+        LOGGER.debug(
+            "Detected %d instances where EM31 data overrides GPS data" % len(bad_logs_idx)
+        )
+        for bad_idx in bad_logs_idx:
+            em31_line_idx = [
+                gps_data[bad_idx].index(line)
+                for line in gps_data[bad_idx]
+                if line.startswith("T")
+            ]
+            # remove the em31 data from gps_data by pop-from-list
+            for line_idx in em31_line_idx:
+                _ = gps_data[bad_idx].pop(line_idx)
     assert all([len(data) <= 6 for data in gps_data])
     gps_times = [int(r31_dat[end : end + 1][0].split(" ")[-1]) for end in gps_ends]
     # drop the first character in each line and join the remainder chunks into 1 string
@@ -232,7 +235,7 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
         use_rmc = True
     except AssertionError:
         LOGGER.warning(
-            "N_RMC (%d) does not equal N_GGA (%d)" % (len(rmc_idx), len(gga_msgs))
+            "n_RMC (%d) does not equal n_GGA (%d) -> omitting sog/cmg from output" % (len(rmc_idx), len(gga_msgs))
         )
         use_rmc = False
     if use_rmc:
@@ -284,7 +287,7 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
             "lon_dir": pd.Series(gga_data[:, 9]).astype(pd.StringDtype()),
         }
     )
-    # return a subset of columns based on Josh's prior work
+    # return only a subset of columns based on Josh's prior work
     cols = ["lat", "lon", "time_gps", "time_sys"]
     if use_rmc:
         gps_df["sog"] = pd.Series(rmc_data[:, 6]).astype("float32")
@@ -341,9 +344,10 @@ if __name__ == "__main__":
     dst_dir = Path("./data/output")
     src_dir.mkdir(exist_ok=True)
     dst_dir.mkdir(exist_ok=True)
-    for data_file in src_dir.glob("???????*.R31"):
+    for data_file in sorted(src_dir.glob("???????*.R31")):
         target = dst_dir / f"{data_file.stem}.ttem.csv"
         if target.exists():
+            LOGGER.info('Skipping existing file: %s' % target.as_posix())
             continue
         data_size_MB = data_file.stat().st_size / 1024**2
         LOGGER.info("Processing %s (~%.2f MB)" % (data_file.as_posix(), data_size_MB))

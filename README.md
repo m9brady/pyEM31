@@ -1,12 +1,16 @@
 # pyEM31
 
-This codebase was initiated by the late Dr. Josh King at Environment and Climate Change Canada (ECCC) with support from Dr. Christian Haas at the Alfred Wegener Institute (AWI). This effort is being continued by Mike Brady (ECCC) and being made available to the general science community and the public.
+This codebase was initiated by the late Dr. Josh King at Environment and Climate Change Canada (ECCC) with support from Dr. Christian Haas at the Alfred Wegener Institute (AWI). Efforts are being continued by Mike Brady (ECCC) in order to share Josh's work with the general science community.
 
 ## The EM31 Instrument
 
-...EM31 blurb goes here with picture(s)...
-http://www.geonics.com/html/em31-mk2.html
-https://www.mathworks.com/help/nav/ref/nmeaparser-system-object.html#mw_b72d25cf-472c-4c4f-8197-85e2a2956480
+The Geonics EM31 sensor is designed to measure changes in conductivity through electromagnetic induction. Offered in two configurations (conventional EM31-MK2 and "short" EM31-SH), the device can be mounted on a trailer/toboggan and towed while traversing a given study area. Further information on the EM31 devices can be found at http://www.geonics.com/html/em31-mk2.html
+
+At ECCC, the EM31-SH version is used (pictured below, mounted to a toboggan) to detect changes in conductivity in sea ice in order to estimate total ice thickness for a given area.
+
+<img src="assets/em31sh_eccc.jpg" width=600>
+
+*Supplementary Figure 1 from Haas et. al (2017) https://dx.doi.org/10.1002/2017GL075434*
 
 ## What this code does
 This codebase takes the raw logger output from the EM31 and converts it into a pandas DataFrame for further analysis. If run as a script, all EM31 data files (`*.R31`) inside `./data/em31/` are converted into comma-separated value (`.csv`) text files containing measurement data and total thickness estimates.
@@ -47,4 +51,8 @@ df = thickness(df, inst_height=0.15, coeffs=HAAS_2010)
 
 
 ## Caveats
-This code tries recover for NMEA0183 message corruption where EM31 data-logger lines split NMEA0183 messages. If it finds any other problems - whether a parsing or checksum error for GPS data - it logs a message but makes no attempt to recover. You can use debug-level logging to log the problematic NMEA0183 messages.
+This code attempts to recover for NMEA0183 message corruption where EM31 data-logger lines intersect multi-line NMEA0183 GPS messages. If it finds any other problems - whether a parsing or checksum error for GPS data - it logs a message but makes no attempt to recover. Users can set debug-level logging to log the problematic NMEA0183 messages for further analysis:
+
+```python
+logger.setLevel(logging.DEBUG)
+```

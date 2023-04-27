@@ -8,9 +8,13 @@ The Geonics EM31 sensor is designed to measure changes in conductivity through e
 
 At ECCC, the EM31-SH version is used (pictured below, mounted to a toboggan) to detect changes in conductivity in sea ice in order to estimate total ice thickness for a given area.
 
-<img src="assets/em31sh_eccc.jpg" width=600>
-
-*Supplementary Figure 1 from Haas et. al (2017) https://dx.doi.org/10.1002/2017GL075434*
+<p align="center">
+    <img src="assets/em31sh_eccc.jpg"  width=600>
+</p>
+<p align="center">
+    <i>Supplementary Figure 1 from Haas et. al (2017)</i>
+    <a href="https://dx.doi.org/10.1002/2017GL075434">https://dx.doi.org/10.1002/2017GL075434</a>
+</p>
 
 ## What this code does
 This codebase takes the raw logger output from the EM31 and converts it into a pandas DataFrame for further analysis. If run as a script, all EM31 data files (`*.R31`) inside `./data/em31/` are converted into comma-separated value (`.csv`) text files containing measurement data and total thickness estimates.

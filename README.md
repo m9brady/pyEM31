@@ -1,6 +1,6 @@
 # pyEM31
 
-This codebase was initiated by the late Dr. Josh King at Environment and Climate Change Canada (ECCC) with support from Dr. Christian Haas at the Alfred Wegener Institute (AWI). Efforts are being continued by Mike Brady (ECCC) in order to share Josh's work with the general science community.
+This codebase was initiated by the late Dr. Josh King ([see original repository](https://github.com/kingjml/pyEM31)) at Environment and Climate Change Canada (ECCC) with support from Dr. Christian Haas at the Alfred Wegener Institute (AWI). Efforts are being continued by Mike Brady (ECCC) in order to share Josh's work with the general science community.
 
 ## The EM31 Instrument
 

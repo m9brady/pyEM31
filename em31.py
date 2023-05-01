@@ -32,12 +32,13 @@ def text_to_bits(text, encoding="windows-1252", errors="surrogatepass"):
 def read_r31(filename, gps_tol=1, encoding="windows-1252"):
     """
     Load R31 files output from the EM31
-        Input:
-            filename: Path to the R31 file
-            gps_tol: GPS time tolerance (seconds)
-            encoding: Encoding of the file
-        Output:
 
+    input:
+        filename: Path to the R31 file
+        gps_tol: GPS time tolerance (seconds)
+        encoding: Encoding of the file
+    output:
+        em31_merged: Pandas dataframe containing parsed EM31 measurement and GPS data
     """
     with open(filename, "r", encoding=encoding) as r31_file:
         r31_dat = r31_file.read().splitlines()
@@ -120,6 +121,17 @@ def parse_data(text, encoding="windows-1252"):
 
 
 def extract_measurements(r31_dat, epoch_ms, epoch_ts, encoding):
+    """
+    Given an in-memory list of raw EM31 data, attempt to parse the sensor measurement data
+
+    input:
+        r31_dat: list of data lines from R31 data file
+        epoch_ms: ?
+        epoch_ts: ?
+        encoding: file encoding (default "windows-1252")
+    output:
+        meas_df: Pandas dataframe containing the parsed data
+    """
     # Read the measurements into DF
     meas_idx = [idx for idx, line in enumerate(r31_dat) if line.startswith("T")]
     meas_data = np.array(
@@ -149,6 +161,12 @@ def extract_measurements(r31_dat, epoch_ms, epoch_ts, encoding):
 def parse_gps(gps_data, idx_of_em31):
     """
     Given a cleaned line of EM31 GPS data and its line number in the EM31 datafile, return a NMEA0183 sentence object
+
+    input:
+        gps_data: single line of NMEA0183 GPS data
+        idx_of_em31: line number in R31 file where gps_data resides
+    output:
+        gps_msg: parsed GPS message in pynmea object
     """
     try:
         gps_msg = pynmea2.parse(gps_data)
@@ -167,6 +185,13 @@ def parse_gps(gps_data, idx_of_em31):
 def extract_gps(r31_dat, epoch_ms, epoch_ts):
     """
     Extract the GPS information from a given EM31 dataset
+
+    input:
+        r31_dat: list of data lines from R31 data file
+        epoch_ms: ?
+        epoch_ts: ?
+    output:
+        meas_df: Pandas dataframe containing the parsed data
     """
     # detect where the GPS data chunks are in the EM31 data file
     gps_starts = [idx for idx, line in enumerate(r31_dat) if line.startswith("@")]
@@ -304,12 +329,13 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
 def thickness(em31_df, inst_height, coeffs=HAAS_2010):
     """
     Estimate total thickness from apparent conductivity
-        input:
-            em31_df: pyEM31 dataframe
-            inst_height: height of the instrument above the snow surface (meters?)
-            coeffs: 3 element list of retrieval coefficients
-        output:
-            em31_df: pyEM31 dataframe with total thickness
+
+    input:
+        em31_df: pyEM31 dataframe
+        inst_height: height of the instrument above the snow surface (meters?)
+        coeffs: 3 element list of retrieval coefficients
+    output:
+        em31_df: pyEM31 dataframe with total thickness
 
     TODO: instead of passing dataframe and modifying, take apparent conductivity as input and produce
     thickness as output
@@ -328,7 +354,7 @@ def thickness(em31_df, inst_height, coeffs=HAAS_2010):
 
 if __name__ == "__main__":
     """
-    If this file is run, attempt to process everything in ./data/em31/
+    If this file is run, attempt to process everything in ./data/em31/ with console-logging
     """
     from pathlib import Path
 

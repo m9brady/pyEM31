@@ -1,5 +1,5 @@
 ## em31
-### location where sample EM31 datasets are stored
+By default, the `em31.py` script looks in this folder to process and `.R31` data files. Some sample data are provided in this repo.
 
 ## output
-### location where output total thickness estimates are stored by default
+By default, processed comma-separated-value `.csv` outputs are saved to this directory

@@ -78,13 +78,13 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
 
     note: most of the index-related stuff is from the EM31 documentation PDFs found online
     """
-    with open(filename, "r", encoding=encoding) as r31_file:
-        r31_dat = r31_file.read().splitlines()
+    with open(filename, "r", encoding=encoding) as f:
+        raw_data = f.read().splitlines()
     # make use of a crude cursor index since we might have to manipulate our index position
     # based on the type of data file
     idx = 0
     # Header is always first row and seems to be either 2 (R31) or 3 (H31) rows long
-    header_1 = r31_dat[idx]
+    header_1 = raw_data[idx]
     instrument = header_1[:7].strip()
     version = header_1[8:12]  # Software version
     survey_type = header_1[12:15]  # GPS or GRD (Grid)
@@ -97,7 +97,7 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
         em_subtype = EM31_SUBTYPES.get(int(header_1[19]))
     idx += 1 # done with row 1
     # second header row
-    header_2 = r31_dat[idx]
+    header_2 = raw_data[idx]
     if not header_2.startswith("H "):
         LOGGER.error("Missing header 2nd row")
         return 1
@@ -116,7 +116,7 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
     idx += 1 # done with row 2
     # 3rd header row if NAV31
     if instrument == "NAV31":
-        header_3 = r31_dat[idx]
+        header_3 = raw_data[idx]
         if not header_3.startswith("G"):
             LOGGER.error("Missing header 3rd row for datafile type NAV31")
             return 1
@@ -125,7 +125,7 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
         nmea_type = NMEA_TYPES.get(int(header_3[19]))
         idx += 1 # done with row 3
     # after the header rows the survey line metadata starts and is usually 4 lines
-    survey_meta = r31_dat[idx:idx+4]
+    survey_meta = raw_data[idx:idx+4]
     # the first chars in each line put together must be LBAZ
     assert "".join([line[0] for line in survey_meta]) == "LBAZ"
     # we don't really care about anything except the Z (time) information
@@ -137,7 +137,7 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
     # hhmmss = time_meta[10:20].strip() #TODO: check if not useful
     idx += 4 # done with survey metadata
     # after the survey metadata is the timer information (epoch)
-    epoch_meta = r31_dat[idx]
+    epoch_meta = raw_data[idx]
     if not epoch_meta.startswith("*"):
         LOGGER.error("Epoch information missing from header")
         return 1
@@ -145,8 +145,8 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
     epoch_ms = int(epoch_meta[13:23]) # datalogger reference epoch (?)
     epoch_ts = datetime.strptime(f"{ddmmyyyy} {epoch_time}", "%d%m%Y %H:%M:%S.%f")
     # Extract the measurements and gps
-    meas_df = extract_measurements(r31_dat, epoch_ms, epoch_ts, em_component, instrument, encoding=encoding)
-    gps_df = extract_gps(r31_dat, epoch_ms, epoch_ts)
+    meas_df = extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument, encoding=encoding)
+    gps_df = extract_gps(raw_data, epoch_ms, epoch_ts)
     # Merge based on time
     em31_merged = pd.merge_asof(
         meas_df,
@@ -219,12 +219,12 @@ def parse_data(text, em_component, instrument, encoding="windows-1252"):
     return meas_time, bits, meas_range2, meas_range3, conductivity_factor, apparent_conductivity, inphase
 
 
-def extract_measurements(r31_dat, epoch_ms, epoch_ts, em_component, instrument, encoding):
+def extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument, encoding):
     """
     Given an in-memory list of raw EM31 data, attempt to parse the sensor measurement data
 
     input:
-        r31_dat: list of data lines from R31 data file
+        raw_data: list of data lines from R31 data file
         epoch_ms: datalogger epoch referencing start-of-data-recording (?)
         epoch_ts: datalogger timestamp (computer time) at point of epoch_ms (?)
         em_component: the chosen em31 surveying mode ("both", "inphase" or "conductivity")
@@ -235,9 +235,9 @@ def extract_measurements(r31_dat, epoch_ms, epoch_ts, em_component, instrument, 
     """
     # Read the measurements into DF
     # NB: "T" works for "auto" mode, but manual mode can include a "2"
-    meas_idx = [idx for idx, line in enumerate(r31_dat) if line.startswith("T")]
+    meas_idx = [idx for idx, line in enumerate(raw_data) if line.startswith("T")]
     meas_data = np.array(
-        [parse_data(r31_dat[idx], em_component, instrument, encoding=encoding) for idx in meas_idx]
+        [parse_data(raw_data[idx], em_component, instrument, encoding=encoding) for idx in meas_idx]
     )
     meas_df = pd.DataFrame(
         data={
@@ -284,23 +284,23 @@ def parse_gps(gps_data, idx_of_em31):
 
 
 # TODO interpolate the GPS data instead of taking nearest
-def extract_gps(r31_dat, epoch_ms, epoch_ts):
+def extract_gps(raw_data, epoch_ms, epoch_ts):
     """
     Extract the GPS information from a given EM31 dataset
 
     input:
-        r31_dat: list of data lines from R31 data file
+        raw_data: list of data lines from R31 data file
         epoch_ms: ?
         epoch_ts: ?
     output:
         meas_df: Pandas dataframe containing the parsed data
     """
     # detect where the GPS data chunks are in the EM31 data file
-    gps_starts = [idx for idx, line in enumerate(r31_dat) if line.startswith("@")]
-    gps_ends = [idx for idx, line in enumerate(r31_dat) if line.startswith("!")]
+    gps_starts = [idx for idx, line in enumerate(raw_data) if line.startswith("@")]
+    gps_ends = [idx for idx, line in enumerate(raw_data) if line.startswith("!")]
     assert len(gps_starts) == len(gps_ends)
     # gps messages can vary in length but are no longer than 6
-    gps_data = [r31_dat[start:end] for start, end in zip(gps_starts, gps_ends)]
+    gps_data = [raw_data[start:end] for start, end in zip(gps_starts, gps_ends)]
     # detect where EM31 measurements have been logged inside GPS messages
     bad_logs_idx = [
         gps_data.index(data)
@@ -322,7 +322,7 @@ def extract_gps(r31_dat, epoch_ms, epoch_ts):
             for line_idx in em31_line_idx:
                 _ = gps_data[bad_idx].pop(line_idx)
     assert all([len(data) <= 6 for data in gps_data])
-    gps_times = [int(r31_dat[end : end + 1][0].split(" ")[-1]) for end in gps_ends]
+    gps_times = [int(raw_data[end : end + 1][0].split(" ")[-1]) for end in gps_ends]
     # drop the first character in each line and join the remainder chunks into 1 string
     gps_data_clean = ["".join([d[1:] for d in data]).strip() for data in gps_data]
     # extract NMEA0183 objects

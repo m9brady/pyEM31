@@ -21,6 +21,42 @@ LOGGER.addHandler(logging.NullHandler())
 HAAS_2010 = [0.98229, 13.404, 1366.4]
 
 
+# instrument constants and lookup-tables
+SURVEY_UNITS = {
+    0: "meters",
+    1: "feet"
+}
+DIPOLE_MODES = {
+    0: "vertical",
+    1: "horizontal",
+    2: "both"
+}
+SURVEY_MODES = {
+    0: "auto",
+    1: "wheel",
+    2: "manual"
+}
+EM31_COMPONENTS = {
+    0: "both",
+    1: "inphase",
+    2: "conductivity"
+}
+EM31_SUBTYPES = {
+    0: "standard",
+    1: "short 2m"
+}
+NMEA_TYPES = {
+    0: "GGA/GSA",
+    1: "GGA",
+    2: "POS",
+    3: "LLK",
+    4: "LLQ",
+    5: "GLL",
+    6: "GGK",
+    7: "Leica TPS"
+}
+
+
 def text_to_bits(text, encoding="windows-1252", errors="surrogatepass"):
     """
     Convert instrument data to something useful
@@ -29,57 +65,87 @@ def text_to_bits(text, encoding="windows-1252", errors="surrogatepass"):
     return bits.zfill(8 * ((len(bits) + 7) // 8))
 
 
-def read_r31(filename, gps_tol=1, encoding="windows-1252"):
+def read_data(filename, gps_tol=1, encoding="windows-1252"):
     """
-    Load R31 files output from the EM31
+    Load R31/H31 files output from the EM31
 
     input:
-        filename: Path to the R31 file
+        filename: Path to the R31/H31 file
         gps_tol: GPS time tolerance (seconds)
         encoding: Encoding of the file
     output:
         em31_merged: Pandas dataframe containing parsed EM31 measurement and GPS data
+
+    note: most of the index-related stuff is from the EM31 documentation PDFs found online
     """
     with open(filename, "r", encoding=encoding) as r31_file:
         r31_dat = r31_file.read().splitlines()
-    # Get header data
-    header = r31_dat[0]
-    if header.startswith("E"):
-        h_ident = header[0:7].strip()  # System ident
-        h_ver = header[7:12]  # Software version
-        h_type = header[12:15]  # GPS or GRD (Grid)
-        h_units = int(header[15:16])  # 0 = meter, 1 = feet
-        h_dipole = int(header[16:17])  # 0 = vertical, 1 = horizontal
-        h_mode = int(header[17:18])  # 0 = auto, 1 = wheel, 2 = manual
-        h_component = int(header[18:19])  # 0 = Both, 1 = Iphase
-        h_computer = int(header[22:23])  # no info on what this is
-    else:
-        LOGGER.error("First line is not a header")
+    # make use of a crude cursor index since we might have to manipulate our index position
+    # based on the type of data file
+    idx = 0
+    # Header is always first row and seems to be either 2 (R31) or 3 (H31) rows long
+    header_1 = r31_dat[idx]
+    instrument = header_1[:7].strip()
+    version = header_1[8:12]  # Software version
+    survey_type = header_1[12:15]  # GPS or GRD (Grid)
+    unit_type = SURVEY_UNITS.get(int(header_1[15]))
+    dipole_mode = DIPOLE_MODES.get(int(header_1[16]))
+    survey_mode = SURVEY_MODES.get(int(header_1[17]))
+    em_component = EM31_COMPONENTS.get(int(header_1[18]))
+    # only the H31 data seems to have the instrument subtype
+    if instrument == "NAV31":
+        em_subtype = EM31_SUBTYPES.get(int(header_1[19]))
+    idx += 1 # done with row 1
+    # second header row
+    header_2 = r31_dat[idx]
+    if not header_2.startswith("H "):
+        LOGGER.error("Missing header 2nd row")
         return 1
-    # Get file data fields
-    file_meta = r31_dat[1]
-    if file_meta.startswith("H"):
-        h_file = file_meta[2:11].strip()
-        h_time = float(file_meta[13:18])
-    else:
-        LOGGER.error("Data fields missing")
+    file_label = header_2[2:11].strip()
+    tws = header_2[11:18] # Time/Wheel/Samples depends on survey_mode
+    if survey_mode in ["auto", "wheel"]:
+        # auto: time increment in seconds
+        # wheel: wheel increment in user units
+        tws = float(tws) 
+    elif survey_mode == "manual":
+        # manual: samples/reading (int?)
+        tws = int(tws)
+    # extra flag for NAV31
+    if instrument == "NAV31":
+        file_tag = "original" if int(header_2[21]) == 0 else "possibly-modified"
+    idx += 1 # done with row 2
+    # 3rd header row if NAV31
+    if instrument == "NAV31":
+        header_3 = r31_dat[idx]
+        if not header_3.startswith("G"):
+            LOGGER.error("Missing header 3rd row for datafile type NAV31")
+            return 1
+        gps_xoffset = float(header_3[1:8]) # Offset of GPS Antenna in X direction
+        gps_yoffset = float(header_3[8:15]) # Offset of GPS Antenna in Y direction
+        nmea_type = NMEA_TYPES.get(int(header_3[19]))
+        idx += 1 # done with row 3
+    # after the header rows the survey line metadata starts and is usually 4 lines
+    survey_meta = r31_dat[idx:idx+4]
+    # the first chars in each line put together must be LBAZ
+    assert "".join([line[0] for line in survey_meta]) == "LBAZ"
+    # we don't really care about anything except the Z (time) information
+    time_meta = survey_meta[-1]
+    if not time_meta.startswith("Z"):
+        LOGGER.error("Missing survey-time metadata")
         return 1
-    # Get file start stamp
-    time_meta = r31_dat[5]
-    if time_meta.startswith("Z"):
-        h_date = time_meta[1:9]
-        h_time = time_meta[10:18]
-    else:
-        LOGGER.error("Start stamp missing")
+    ddmmyyyy = time_meta[1:9]
+    # hhmmss = time_meta[10:20].strip() #TODO: check if not useful
+    idx += 4 # done with survey metadata
+    # after the survey metadata is the timer information (epoch)
+    epoch_meta = r31_dat[idx]
+    if not epoch_meta.startswith("*"):
+        LOGGER.error("Epoch information missing from header")
         return 1
-    # Get timer relation
-    epoch_meta = r31_dat[6]
-    if epoch_meta.startswith("*"):
-        epoch_time = epoch_meta[1:13]
-        epoch_ms = int(epoch_meta[13:23])
-        epoch_ts = datetime.strptime(f"{h_date} {epoch_time}", "%d%m%Y %H:%M:%S.%f")
+    epoch_time = epoch_meta[1:13] # precise computer time (local timezone probably)
+    epoch_ms = int(epoch_meta[13:23]) # datalogger reference epoch (?)
+    epoch_ts = datetime.strptime(f"{ddmmyyyy} {epoch_time}", "%d%m%Y %H:%M:%S.%f")
     # Extract the measurements and gps
-    meas_df = extract_measurements(r31_dat, epoch_ms, epoch_ts, encoding=encoding)
+    meas_df = extract_measurements(r31_dat, epoch_ms, epoch_ts, em_component, instrument, encoding=encoding)
     gps_df = extract_gps(r31_dat, epoch_ms, epoch_ts)
     # Merge based on time
     em31_merged = pd.merge_asof(
@@ -96,46 +162,82 @@ def read_r31(filename, gps_tol=1, encoding="windows-1252"):
     return em31_merged
 
 
-def parse_data(text, encoding="windows-1252"):
+def parse_data(text, em_component, instrument, encoding="windows-1252"):
     """
-    Given a line of EM31 measurement data, extract some information
+    Given a line of EM31 measurement data and the desired component, extract some information
     """
     bits = text_to_bits(text[1], encoding=encoding)
+    # measurement flags
     meas_range3 = int(bits[5])
     meas_range2 = int(bits[6])
+    # measurement data
+    # NB: in the H31 manual there is a gap between reading1 and reading2
+    # but in the example H31 provided by Marios there is no gap
     meas_read1 = float(text[2:7])
     meas_read2 = float(text[7:12])
     meas_time = int(text[13:23])
-    if (meas_range2 == 1) and (meas_range3 == 1):
-        c_factor = -0.25
-        i_factor = -0.0025
+    # based on the manual, there are several multiplication factors
+    # depending on the em components and flags in the data
+    if em_component == "both":
+        # inphase multiplcation factor is constant in BOTH mode
+        inphase_factor = -0.025
+        # conductivity factor in BOTH mode depends on range flags
+        if meas_range2 == 1:
+            if meas_range3 == 1:
+                conductivity_factor = -0.25
+            elif meas_range3 == 0:
+                conductivity_factor = -0.0025
+        elif meas_range2 == 0:
+            if meas_range3 == 1:
+                conductivity_factor = -0.025
+            elif meas_range3 == 0:
+                conductivity_factor = np.nan
         # use 6-degree precision to avoid float issues
-        app_cond = round(meas_read1 * c_factor, 6)
-        in_phase = round(meas_read2 * i_factor, 6)
-    else:
-        c_factor = np.nan
-        i_factor = np.nan
-        app_cond = np.nan
-        in_phase = np.nan
-    return meas_time, bits, meas_range2, meas_range3, c_factor, app_cond, in_phase
+        # in BOTH mode, reading1 is conductivity and reading2 is inphase
+        apparent_conductivity = round(meas_read1 * conductivity_factor, 6)
+        inphase = round(meas_read2 * inphase_factor, 6)
+    elif em_component == "inphase":
+        # conductivity is not measured in INPHASE mode
+        apparent_conductivity = np.nan
+        if meas_range2 == 1:
+            if meas_range3 == 1:
+                inphase_factor = -0.0625
+            elif meas_range3 == 0:
+                inphase_factor = -0.000625
+        elif meas_range2 == 0:
+            if meas_range3 == 1:
+                inphase_factor = -0.00625
+            elif meas_range3 == 0:
+                # no mention in manual of what to do when both range2 and range3 are 0
+                inphase_factor = np.nan
+        # use 6-degree precision to avoid float issues
+        # in INPHASE mode, reading1 is inphase
+        inphase = round(meas_read2 * inphase_factor, 6)    
+    # according to manual, if short EM31 being used then divide inphase by 3.35
+    if instrument == "EM31-SH":
+        inphase /= 3.35
+    return meas_time, bits, meas_range2, meas_range3, conductivity_factor, apparent_conductivity, inphase
 
 
-def extract_measurements(r31_dat, epoch_ms, epoch_ts, encoding):
+def extract_measurements(r31_dat, epoch_ms, epoch_ts, em_component, instrument, encoding):
     """
     Given an in-memory list of raw EM31 data, attempt to parse the sensor measurement data
 
     input:
         r31_dat: list of data lines from R31 data file
-        epoch_ms: ?
-        epoch_ts: ?
+        epoch_ms: datalogger epoch referencing start-of-data-recording (?)
+        epoch_ts: datalogger timestamp (computer time) at point of epoch_ms (?)
+        em_component: the chosen em31 surveying mode ("both", "inphase" or "conductivity")
+        instrument: if EM31-SH, additional multiplcation factor needed
         encoding: file encoding (default "windows-1252")
     output:
         meas_df: Pandas dataframe containing the parsed data
     """
     # Read the measurements into DF
+    # NB: "T" works for "auto" mode, but manual mode can include a "2"
     meas_idx = [idx for idx, line in enumerate(r31_dat) if line.startswith("T")]
     meas_data = np.array(
-        [parse_data(r31_dat[idx], encoding=encoding) for idx in meas_idx]
+        [parse_data(r31_dat[idx], em_component, instrument, encoding=encoding) for idx in meas_idx]
     )
     meas_df = pd.DataFrame(
         data={
@@ -372,14 +474,14 @@ if __name__ == "__main__":
     dst_dir = Path("./data/output")
     src_dir.mkdir(exist_ok=True)
     dst_dir.mkdir(exist_ok=True)
-    for data_file in sorted(src_dir.glob("???????*.R31")):
+    for data_file in sorted(src_dir.glob("???????*.?31")):
         target = dst_dir / f"{data_file.stem}.ttem.csv"
         if target.exists():
             LOGGER.info("Skipping existing file: %s" % target.as_posix())
             continue
         data_size_MB = data_file.stat().st_size / 1024**2
         LOGGER.info("Processing %s (~%.2f MB)" % (data_file.as_posix(), data_size_MB))
-        df = read_r31(data_file)
+        df = read_data(data_file)
         df = thickness(df, 0.15)
         df.to_csv(target, index=False, na_rep="NaN")
         LOGGER.info("Saved to CSV: %s" % target.as_posix())

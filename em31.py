@@ -179,40 +179,37 @@ def parse_data(text, em_component, instrument, encoding="windows-1252"):
     # based on the manual, there are several multiplication factors
     # depending on the em components and flags in the data
     if em_component == "both":
-        # inphase multiplcation factor is constant in BOTH mode
+        # inphase multiplication factor is constant in BOTH mode
         inphase_factor = -0.025
         # conductivity factor in BOTH mode depends on range flags
-        if meas_range2 == 1:
-            if meas_range3 == 1:
-                conductivity_factor = -0.25
-            elif meas_range3 == 0:
-                conductivity_factor = -0.0025
-        elif meas_range2 == 0:
-            if meas_range3 == 1:
-                conductivity_factor = -0.025
-            elif meas_range3 == 0:
-                conductivity_factor = np.nan
+        if meas_range2 == 1 and meas_range3 == 1:
+            conductivity_factor = -0.25
+        elif meas_range2 == 0 and meas_range3 == 1:
+            conductivity_factor = -0.025
+        elif meas_range2 == 1 and meas_range3 == 0:
+            conductivity_factor = -0.0025
+        elif meas_range2 == 0 and meas_range3 == 0:
+            # manual doesn't state what to do in the case of 0, 0 for both range flags
+            conductivity_factor = np.nan
         # use 6-degree precision to avoid float issues
         # in BOTH mode, reading1 is conductivity and reading2 is inphase
         apparent_conductivity = round(meas_read1 * conductivity_factor, 6)
         inphase = round(meas_read2 * inphase_factor, 6)
     elif em_component == "inphase":
-        # conductivity is not measured in INPHASE mode
-        apparent_conductivity = np.nan
-        if meas_range2 == 1:
-            if meas_range3 == 1:
-                inphase_factor = -0.0625
-            elif meas_range3 == 0:
-                inphase_factor = -0.000625
-        elif meas_range2 == 0:
-            if meas_range3 == 1:
-                inphase_factor = -0.00625
-            elif meas_range3 == 0:
-                # no mention in manual of what to do when both range2 and range3 are 0
-                inphase_factor = np.nan
+        if meas_range2 == 1 and meas_range3 == 1:
+            inphase_factor = -0.0625
+        elif meas_range2 == 0 and meas_range3 == 1:
+            inphase_factor = -0.00625
+        elif meas_range2 == 1 and meas_range3 == 0:
+            inphase_factor = -0.000625
+        elif meas_range2 == 0 and meas_range3 == 0:
+            # manual doesn't state what to do in the case of 0, 0 for both range flags
+            inphase_factor = np.nan
         # use 6-degree precision to avoid float issues
         # in INPHASE mode, reading1 is inphase
-        inphase = round(meas_read2 * inphase_factor, 6)    
+        inphase = round(meas_read1 * inphase_factor, 6)
+        # conductivity is not measured in INPHASE mode
+        apparent_conductivity = np.nan
     # according to manual, if short EM31 being used then divide inphase by 3.35
     if instrument == "EM31-SH":
         inphase /= 3.35
@@ -266,7 +263,7 @@ def parse_gps(gps_data, idx_of_em31):
 
     input:
         gps_data: single line of NMEA0183 GPS data
-        idx_of_em31: line number in R31 file where gps_data resides
+        idx_of_em31: line number in R31/H31 file where gps_data resides
     output:
         gps_msg: parsed GPS message in pynmea object
     """
@@ -289,9 +286,9 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
     Extract the GPS information from a given EM31 dataset
 
     input:
-        raw_data: list of data lines from R31 data file
-        epoch_ms: ?
-        epoch_ts: ?
+        raw_data: list of data lines from R31/H31 data file
+        epoch_ms: datalogger epoch referencing start-of-data-recording (?)
+        epoch_ts: datalogger timestamp (computer time) at point of epoch_ms (?)
     output:
         meas_df: Pandas dataframe containing the parsed data
     """

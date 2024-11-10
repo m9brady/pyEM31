@@ -184,6 +184,8 @@ def parse_data(text, em_component, instrument, encoding="windows-1252"):
         # conductivity factor in BOTH mode depends on range flags
         if meas_range2 == 1 and meas_range3 == 1:
             conductivity_factor = -0.25
+            # weird edge-case where the inphase factor is actually -0.0025
+            inphase_factor = -0.0025
         elif meas_range2 == 0 and meas_range3 == 1:
             conductivity_factor = -0.025
         elif meas_range2 == 1 and meas_range3 == 0:

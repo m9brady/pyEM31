@@ -17,13 +17,13 @@ At ECCC, the EM31-SH version is used (pictured below, mounted on a toboggan) to 
 </p>
 
 ## What this code does
-This codebase takes the raw logger output from the EM31 and converts it into a pandas DataFrame for further analysis. If run as a script, all EM31 data files (`*.R31`) inside `./data/em31/` are converted into comma-separated value (`.csv`) text files containing measurement data and total thickness estimates.
+This codebase takes the raw logger output from the EM31 and converts it into a pandas DataFrame for further analysis. If run as a script, all EM31 data files (`*.R31`, `*.H31`) inside `./data/em31/` are converted into comma-separated value (`.csv`) text files containing measurement data and total thickness estimates.
 
 ## Quickstart
 
 ### Creating the runtime environment
 ```zsh
-# assumes you have python3.10 installed
+# assumes you have python3.10+ installed
 # create the environment
 python3 -m venv .venv
 
@@ -44,10 +44,10 @@ python3 em31.py
 
 ### Using the functions interactively
 ```python
-from em31 import read_r31, thickness
+from em31 import read_data, thickness
 # gps_tol: acceptable gps time separation in seconds
 # encoding: the specific encoding for the input data file (default windows-1252)
-df = read_r31('./data/em31/datafile.R31', gps_tol=1, encoding='windows-1252')
+df = read_data('./data/em31/datafile.R31', gps_tol=1, encoding='windows-1252')
 # inst_height: height of instrument above surface (meters?)
 # coeffs: 3-element list of coefficients for estimating thickness from EM31 measurements
 df = thickness(df, inst_height=0.15, coeffs=HAAS_2010)

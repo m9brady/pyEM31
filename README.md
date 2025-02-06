@@ -50,7 +50,7 @@ from em31 import read_data, thickness
 df = read_data('./data/em31/datafile.R31', gps_tol=1, encoding='windows-1252')
 # inst_height: height of instrument above surface (meters?)
 # coeffs: 3-element list of coefficients for estimating thickness from EM31 measurements
-df = thickness(df, inst_height=0.15, coeffs=HAAS_2010)
+df = thickness(df, inst_height=0.15, coeffs=HAAS_2017)
 ```
 
 

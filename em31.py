@@ -18,7 +18,7 @@ LOGGER.addHandler(logging.NullHandler())
 # These coefficients for estimating ice thickness from measured apparent conductivity
 # are derived from Haas et. al (2017): http://dx.doi.org/10.1002/2017GL075434
 # Supplementary figure S2
-HAAS_2010 = [0.98229, 13.404, 1366.4]
+HAAS_2017 = [0.98229, 13.404, 1366.4]
 
 
 # instrument constants and lookup-tables
@@ -427,7 +427,7 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
     return subset
 
 
-def thickness(em31_df, inst_height, coeffs=HAAS_2010):
+def thickness(em31_df, inst_height, coeffs=HAAS_2017):
     """
     Estimate total thickness from apparent conductivity
 

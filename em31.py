@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import pynmea2
+import pyproj
 
 LOGGER = logging.getLogger("pyem31")
 LOGGER.addHandler(logging.NullHandler())
@@ -147,19 +148,52 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
     # Extract the measurements and gps
     meas_df = extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument, encoding=encoding)
     gps_df = extract_gps(raw_data, epoch_ms, epoch_ts)
+    LOGGER.info('Interpolating GPS data...')
+    gps_interp = interpolate_gps(gps_df, 3413, 1e-3)
     # Merge based on time
+    LOGGER.info('Merging EM31 data with interpolated GPS data...')
     em31_merged = pd.merge_asof(
         meas_df,
-        gps_df,
+        gps_interp,
         left_on="time_ds",
         right_on="time_sys",
         direction="nearest",
     )
     # Remove measurements where GPS is desynced
-    # TODO: Make sure time_sys is what we think it is
+    # NB: now that we interpolate by default, there should be zero desync
+    # time_sys: datalogger timestamp for GGA-NMEA message
+    # time_ds: datalogger timestamp for EM31 data
     time_diff = em31_merged["time_ds"] - em31_merged["time_sys"]
     em31_merged = em31_merged.loc[time_diff < timedelta(seconds=gps_tol)]
     return em31_merged
+
+
+def interpolate_gps(gps_df, projected_crs=3413, resample_freq_seconds=1e-3):
+    """
+    Given a GPS dataframe containing lats, lons, timestamps from GGA NMEA messages from EM31 
+    datafile and a desired projected coordinate reference system epsg code:
+     - project lons/lats to passed crs
+     - interpolate to passed sample_freq (seconds)
+     - convert XY back to LonLat
+
+     NB: currently defaults to NSIDC North Pole Stereographic with 0.001s resample freq
+    """
+    trans = pyproj.Transformer.from_crs(
+        crs_from=pyproj.CRS.from_epsg(4326),
+        crs_to=pyproj.CRS.from_epsg(projected_crs),
+        always_xy=True
+    )
+    xs, ys = trans.transform(gps_df['lon'], gps_df['lat'])
+    # NB: for longer datafiles and smaller resample_freq_seconds this could
+    # produce gigantic tables
+    interp_df = gps_df[['lon', 'lat', 'time_sys']].assign(
+        lon=xs,
+        lat=ys
+    ).set_index('time_sys').resample(f'{resample_freq_seconds:f}s').interpolate()
+    lons, lats = trans.transform(interp_df['lon'], interp_df['lat'], direction='INVERSE')
+    interp_df['lon'] = lons
+    interp_df['lat'] = lats
+    return interp_df.reset_index()
 
 
 def parse_data(text, em_component, instrument, encoding="windows-1252"):
@@ -191,8 +225,8 @@ def parse_data(text, em_component, instrument, encoding="windows-1252"):
         elif meas_range2 == 1 and meas_range3 == 0:
             conductivity_factor = -0.0025
         elif meas_range2 == 0 and meas_range3 == 0:
-            # manual doesn't state what to do in the case of 0, 0 for both range flags
-            conductivity_factor = np.nan
+            # geonics folks indicate that 0 0 is equivalent to 1 1
+            conductivity_factor = -0.25
         # use 6-degree precision to avoid float issues
         # in BOTH mode, reading1 is conductivity and reading2 is inphase
         apparent_conductivity = round(meas_read1 * conductivity_factor, 6)
@@ -205,8 +239,8 @@ def parse_data(text, em_component, instrument, encoding="windows-1252"):
         elif meas_range2 == 1 and meas_range3 == 0:
             inphase_factor = -0.000625
         elif meas_range2 == 0 and meas_range3 == 0:
-            # manual doesn't state what to do in the case of 0, 0 for both range flags
-            inphase_factor = np.nan
+            # geonics folks indicate that 0 0 is equivalent to 1 1
+            inphase_factor = -0.0625
         # use 6-degree precision to avoid float issues
         # in INPHASE mode, reading1 is inphase
         inphase = round(meas_read1 * inphase_factor, 6)

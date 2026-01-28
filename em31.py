@@ -21,6 +21,11 @@ LOGGER.addHandler(logging.NullHandler())
 # Supplementary figure S2
 HAAS_2017 = [0.98229, 13.404, 1366.4]
 
+# in Pandas 3.0+ the default timestamp resolution is MICROseconds
+if int(pd.__version__.split(".")[0]) >= 3:
+    USE_MICROSECONDS = True
+else:
+    USE_MICROSECONDS = False
 
 # instrument constants and lookup-tables
 SURVEY_UNITS = {
@@ -150,6 +155,9 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
     gps_df = extract_gps(raw_data, epoch_ms, epoch_ts)
     LOGGER.info('Interpolating GPS data...')
     gps_interp = interpolate_gps(gps_df, 3413, 1e-3)
+    # new in Pandas 3.0+
+    if USE_MICROSECONDS:
+        gps_interp['time_sys'] = gps_interp['time_sys'].astype('datetime64[us]')
     # Merge based on time
     LOGGER.info('Merging EM31 data with interpolated GPS data...')
     em31_merged = pd.merge_asof(

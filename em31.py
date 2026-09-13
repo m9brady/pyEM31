@@ -6,6 +6,7 @@ Many thanks to Christian Haas for the help with this
 """
 
 import logging
+from bisect import bisect_left
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -85,6 +86,28 @@ def text_to_bits(text, encoding="windows-1252", errors="surrogatepass"):
     bits = bin(int.from_bytes(text.encode(encoding, errors), "big"))[2:]
     return bits.zfill(8 * ((len(bits) + 7) // 8))
 
+def get_measurements_before_after_comment(measurement_indices: list, comment_line_num: int) -> tuple[int | None, int | None]:
+    """
+    When Pete makes a comment while surveying, he wants the measurement before and after the comment
+    in order to get a good location fix
+
+    Assumptions:
+        - measurement_indices is sorted
+    """
+    list_idx = bisect_left(measurement_indices, comment_line_num)
+    # if the comment is before any measurement data, we return None for the left-index
+    if list_idx == 0:
+        before = None
+        after = measurement_indices[list_idx]
+    # same idea if it is at the very end (without any subsequent measurements)
+    elif list_idx == len(measurement_indices) - 1:
+        before = measurement_indices[list_idx - 1]
+        after = None
+    else:
+        before = measurement_indices[list_idx - 1]
+        after = measurement_indices[list_idx]
+    return (before, after)
+
 
 def read_data(filename, gps_tol=1, encoding="latin-1"):
     """
@@ -131,7 +154,7 @@ def read_data(filename, gps_tol=1, encoding="latin-1"):
     try:
         assert file_label == filename.stem
     except AssertionError:
-        LOGGER.warning("Filename/Internal label mismatch for file {filename.resolve()}: {filename.stem!r} vs {file_label!r}")
+        LOGGER.warning(f"Filename/Internal label mismatch for file {filename.resolve()}: {filename.stem!r} vs {file_label!r}")
     tws = header_2[11:18] # Time/Wheel/Samples depends on survey_mode
     if survey_mode in ["auto", "wheel"]:
         # auto: time increment in seconds
@@ -197,6 +220,13 @@ def read_data(filename, gps_tol=1, encoding="latin-1"):
     # time_ds: datalogger timestamp for EM31 data
     time_diff = em31_merged["time_ds"] - em31_merged["time_sys"]
     em31_merged = em31_merged.loc[time_diff < timedelta(seconds=gps_tol)]
+    # detect comments, if any are present expose them in the log
+    comm_idx = [idx for idx, line in enumerate(raw_data) if line.startswith("C")]
+    if len(comm_idx) > 0:
+        l_nums = em31_merged["l_num"].to_list()
+        for comment_idx in comm_idx:
+            before, after = get_measurements_before_after_comment(l_nums, comment_idx)
+            LOGGER.info(f"Comment: {raw_data[comment_idx][1:13].strip()!r} data lines: {before, after}")
     return em31_merged
 
 

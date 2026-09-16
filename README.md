@@ -46,8 +46,8 @@ python3 em31.py
 ```python
 from em31 import read_data, thickness
 # gps_tol: acceptable gps time separation in seconds
-# encoding: the specific encoding for the input data file (default windows-1252)
-df = read_data('./data/em31/datafile.R31', gps_tol=1, encoding='windows-1252')
+# encoding: the specific encoding for the input data file (default latin-1) if you know it
+df = read_data('./data/em31/datafile.R31', gps_tol=1, encoding='latin-1')
 # inst_height: height of instrument above surface (meters?)
 # coeffs: 3-element list of coefficients for estimating thickness from EM31 measurements
 df = thickness(df, inst_height=0.15, coeffs=HAAS_2017)

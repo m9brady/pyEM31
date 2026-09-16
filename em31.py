@@ -79,14 +79,14 @@ class EM31GPSError(ValueError):
         return super().__str__()
     
 
-def text_to_bits(text, encoding="windows-1252", errors="surrogatepass"):
+def text_to_bits(text, encoding="latin-1", errors="surrogatepass"):
     """
     Convert instrument data to something useful
     """
     bits = bin(int.from_bytes(text.encode(encoding, errors), "big"))[2:]
     return bits.zfill(8 * ((len(bits) + 7) // 8))
 
-def get_measurements_before_after_comment(measurement_indices: list, comment_line_num: int) -> tuple[int | None, int | None]:
+def get_measurements_before_after_comment(measurement_indices: list, comment_line_num: int) -> tuple:
     """
     When Pete makes a comment while surveying, he wants the measurement before and after the comment
     in order to get a good location fix
@@ -225,6 +225,12 @@ def read_data(filename, gps_tol=1, encoding="latin-1"):
     if len(comm_idx) > 0:
         l_nums = em31_merged["l_num"].to_list()
         for comment_idx in comm_idx:
+            # CEMSI EM31 data has corrupted lines that get treated as Comments (length 23 starting with C)
+            # so we sneakily try to detect non-integer data (where there absolutely should be int data)
+            try:
+                int(raw_data[comment_idx][13:])
+            except ValueError:
+                continue
             before, after = get_measurements_before_after_comment(l_nums, comment_idx)
             LOGGER.info(f"Comment: {raw_data[comment_idx][1:13].strip()!r} data lines: {before, after}")
     return em31_merged
@@ -342,7 +348,7 @@ def extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument,
     )
     meas_df = pd.DataFrame(
         data={
-            "l_num": pd.Series(meas_idx, dtype=PD_UINT32),
+            "l_num": pd.Series(meas_idx, dtype=PD_UINT32) + 1,          # we +1 here because of zero-indexing
             "time_ms": pd.Series(meas_data[:, 0], dtype=PD_UINT32),
             "flags": pd.Series(meas_data[:, 1], dtype=PD_STR),
             "range2": pd.Series(meas_data[:, 2], dtype=PD_UINT32),
@@ -363,12 +369,13 @@ def extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument,
         [pd.Timedelta(milliseconds=float(rel)) for rel in meas_df["time_relative"]]
     )
     # in the CEMSI R31, there are very strange "time_relative" entries that are unsorted?
-    # we identify any greater than 5000ms and drop them
-    trel_diffs = meas_df['time_relative'].shift(-1) - meas_df['time_relative']
-    n_anomalous_trel = len(trel_diffs.loc[trel_diffs > 5000])
-    if n_anomalous_trel > 0:
-        LOGGER.warning(f"Identified {n_anomalous_trel} malformed (>= 5000ms) timestamps. Dropping from final dataframe")
-        meas_df = meas_df.loc[trel_diffs <= 5000].reset_index(drop=True)
+    # we identify any negative timestamp diffs in sequential measurement rows and drop the offending row
+    tdiffs = meas_df['time_ds'].shift(-1) - meas_df['time_ds']
+    anomalous_tdiffs = tdiffs.loc[tdiffs < '00:00:00']
+    # WALRUS OPERATOR YEAH!
+    if (n_anomalous_tdiffs := len(anomalous_tdiffs)) > 0:
+        LOGGER.warning(f"Identified {n_anomalous_tdiffs} malformed (negative tdelta in sequential rows) timestamps. Dropping from final dataframe")
+        meas_df = meas_df.drop(anomalous_tdiffs.index).reset_index(drop=True)
     return meas_df
 
 

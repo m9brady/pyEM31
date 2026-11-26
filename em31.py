@@ -7,7 +7,7 @@ Many thanks to Christian Haas for the help with this
 
 import logging
 from bisect import bisect_left
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 
 import numpy as np
@@ -18,10 +18,12 @@ import pyproj
 LOGGER = logging.getLogger("pyem31")
 LOGGER.addHandler(logging.NullHandler())
 
-# These coefficients for estimating ice thickness from measured apparent conductivity
+# These coefficients are used for estimating ice thickness from measured apparent conductivity
 # are derived from Haas et. al (2017): http://dx.doi.org/10.1002/2017GL075434
 # Supplementary figure S2
-HAAS_2017 = [0.98229, 13.404, 1366.4]
+HAAS_2017_INTERCEPT = 13.404
+HAAS_2017_AMPLITUDE= 1366.4
+HAAS_2017_CHANGE_RATE = -0.98229
 
 # in Pandas 3.0+ the default timestamp resolution is MICROseconds
 if int(pd.__version__.split(".")[0]) >= 3:
@@ -554,7 +556,7 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
                         msg.timestamp.minute,
                         msg.timestamp.second,
                         msg.timestamp.microsecond,
-                        tzinfo=timezone.utc,  # always UTC according to Trimble
+                        tzinfo=UTC,  # always UTC according to Trimble
                     ),
                     msg.status,
                     msg.latitude,
@@ -602,30 +604,37 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
     return subset
 
 
-def thickness(em31_df, inst_height, coeffs=HAAS_2017):
+def thickness(app_cond, inst_height, intercept=HAAS_2017_INTERCEPT, amplitude=HAAS_2017_AMPLITUDE, change_rate=HAAS_2017_CHANGE_RATE):
     """
-    Estimate total thickness from apparent conductivity
+    Estimate total thickness from apparent conductivity applied through transformation equation
+    discussed in Haas et al 1997 http://hdl.handle.net/10013/epic.11729.d001
+
+    apparent_conductivity = intercept + amplitude * exp(change_rate * ice_thickness)
+
+    Since we have observations for apparent_conductivity, we invert the above equation to 
+    calculate thickness (accounting for instrument height above surface)
+
+    ice_thickness = (log((apparent_conductivity - intercept) / amplitude) / change_rate) - inst_height
 
     input:
-        em31_df: pyEM31 dataframe
-        inst_height: height of the instrument above the snow surface (meters?)
-        coeffs: 3 element list of retrieval coefficients
-    output:
-        em31_df: pyEM31 dataframe with total thickness
+        app_cond: apparent conductivity from EM31 instrument (appcond column from em31 dataframe)
+        inst_height: height of the instrument above the surface (meters)
+        intercept: the baseline conductivity with no ice present (default use HAAS_2017)
+        amplitude: amount by which conductivity changes due to presence of ice (default use HAAS_2017)
+        change_rate: rate at which conductivity changes with changes in ice thickness (default use HAAS_2017)
 
-    TODO: instead of passing dataframe and modifying, take apparent conductivity as input and produce
-    thickness as output
-    TODO: instead of list of coefficients, split into separate variables for readability
-    """
+    output:
+        ice_thickness: ice thickness estimates inverted via EM31-observed apparent conductivity
+    """    
     # modify the instrument measurements using the coefficients
-    mod_app_cond = (em31_df["appcond"] - coeffs[1]) / coeffs[2]
-    # fill negative values with np.nan to avoid np.log warnings
+    mod_app_cond = (app_cond - intercept) / amplitude
+    # fill negative apparent conductivity with np.nan to avoid np.log warnings
     mod_app_cond[mod_app_cond < 0] = np.nan
     # estimate total thickness from instrument
-    em31_df["ttem"] = -1 / coeffs[0] * np.log(mod_app_cond)
-    # account for instrument height above snow surface
-    em31_df["ttem"] -= inst_height
-    return em31_df
+    ice_thickness = np.log(mod_app_cond) / change_rate
+    # adjust thickness for instrument height above surface
+    ice_thickness -= inst_height
+    return ice_thickness
 
 
 if __name__ == "__main__":
@@ -656,6 +665,7 @@ if __name__ == "__main__":
         data_size_MB = data_file.stat().st_size / 1024**2
         LOGGER.info(f"Processing {data_file.resolve()} (~{data_size_MB:.2f} MB)")
         df = read_data(data_file)
-        df = thickness(df, 0.15)
+        LOGGER.info("Calculating ice thickness using default HAAS_2017 coefficients")
+        df['thickness_HAAS2017'] = thickness(df['appcond'], 0.15)
         df.to_csv(target, index=False, na_rep="NaN")
         LOGGER.info(f"Saved to CSV: {target.resolve()}")

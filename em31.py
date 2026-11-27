@@ -6,7 +6,9 @@ Many thanks to Christian Haas for the help with this
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from bisect import bisect_left
+from datetime import datetime, timedelta, UTC
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -16,10 +18,12 @@ import pyproj
 LOGGER = logging.getLogger("pyem31")
 LOGGER.addHandler(logging.NullHandler())
 
-# These coefficients for estimating ice thickness from measured apparent conductivity
+# These coefficients are used for estimating ice thickness from measured apparent conductivity
 # are derived from Haas et. al (2017): http://dx.doi.org/10.1002/2017GL075434
 # Supplementary figure S2
-HAAS_2017 = [0.98229, 13.404, 1366.4]
+HAAS_2017_INTERCEPT = 13.404
+HAAS_2017_AMPLITUDE= 1366.4
+HAAS_2017_CHANGE_RATE = -0.98229
 
 # in Pandas 3.0+ the default timestamp resolution is MICROseconds
 if int(pd.__version__.split(".")[0]) >= 3:
@@ -61,30 +65,70 @@ NMEA_TYPES = {
     6: "GGK",
     7: "Leica TPS"
 }
+# Pandas dtypes (instead of instantiating a new one each time)
+PD_STR = pd.StringDtype()
+PD_UINT8 = pd.UInt8Dtype()
+PD_UINT16 = pd.UInt16Dtype()
+PD_UINT32 = pd.UInt32Dtype()
+PD_FLOAT32 = pd.Float32Dtype()
+PD_FLOAT64 = pd.Float64Dtype()
 
+class EM31GPSError(ValueError):
+    """Raised when no valid GPS Positioning ($GNGGA) data found"""
+    def __init__(self, message):
+        super().__init__(message)
+    def __str__(self):
+        return super().__str__()
+    
 
-def text_to_bits(text, encoding="windows-1252", errors="surrogatepass"):
+def text_to_bits(text, encoding="latin-1", errors="surrogatepass"):
     """
     Convert instrument data to something useful
     """
     bits = bin(int.from_bytes(text.encode(encoding, errors), "big"))[2:]
     return bits.zfill(8 * ((len(bits) + 7) // 8))
 
+def get_measurements_before_after_comment(measurement_indices: list, comment_line_num: int) -> tuple:
+    """
+    When Pete makes a comment while surveying, he wants the measurement before and after the comment
+    in order to get a good location fix
 
-def read_data(filename, gps_tol=1, encoding="windows-1252"):
+    Assumptions:
+        - measurement_indices is sorted
+    """
+    list_idx = bisect_left(measurement_indices, comment_line_num)
+    # if the comment is before any measurement data, we return None for the left-index
+    if list_idx == 0:
+        before = None
+        after = measurement_indices[list_idx]
+    # same idea if it is at the very end (without any subsequent measurements)
+    elif list_idx == len(measurement_indices) - 1:
+        before = measurement_indices[list_idx - 1]
+        after = None
+    else:
+        before = measurement_indices[list_idx - 1]
+        after = measurement_indices[list_idx]
+    return (before, after)
+
+
+def read_data(filename, gps_tol=1, encoding="latin-1"):
     """
     Load R31/H31 files output from the EM31
 
     input:
         filename: Path to the R31/H31 file
         gps_tol: GPS time tolerance (seconds)
-        encoding: Encoding of the file
+        encoding: Encoding of the file (default 'latin-1')
     output:
         em31_merged: Pandas dataframe containing parsed EM31 measurement and GPS data
 
     note: most of the index-related stuff is from the EM31 documentation PDFs found online
     """
-    with open(filename, "r", encoding=encoding) as f:
+    if not isinstance(filename, Path):
+        filename = Path(filename)
+    if not filename.exists():
+        raise FileNotFoundError(f"No such file: {filename.resolve()}")
+    with filename.open("r", encoding=encoding) as f:
         raw_data = f.read().splitlines()
     # make use of a crude cursor index since we might have to manipulate our index position
     # based on the type of data file
@@ -108,6 +152,11 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
         LOGGER.error("Missing header 2nd row")
         return 1
     file_label = header_2[2:11].strip()
+    # quick check ensure filename hasn't been mashed
+    try:
+        assert file_label == filename.stem
+    except AssertionError:
+        LOGGER.warning(f"Filename/Internal label mismatch for file {filename.resolve()}: {filename.stem!r} vs {file_label!r}")
     tws = header_2[11:18] # Time/Wheel/Samples depends on survey_mode
     if survey_mode in ["auto", "wheel"]:
         # auto: time increment in seconds
@@ -151,7 +200,7 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
     epoch_ms = int(epoch_meta[13:23]) # datalogger reference epoch (?)
     epoch_ts = datetime.strptime(f"{ddmmyyyy} {epoch_time}", "%d%m%Y %H:%M:%S.%f")
     # Extract the measurements and gps
-    meas_df = extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument, encoding=encoding)
+    meas_df = extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument, encoding)
     gps_df = extract_gps(raw_data, epoch_ms, epoch_ts)
     LOGGER.info('Interpolating GPS data...')
     gps_interp = interpolate_gps(gps_df, 3413, 1e-3)
@@ -173,6 +222,19 @@ def read_data(filename, gps_tol=1, encoding="windows-1252"):
     # time_ds: datalogger timestamp for EM31 data
     time_diff = em31_merged["time_ds"] - em31_merged["time_sys"]
     em31_merged = em31_merged.loc[time_diff < timedelta(seconds=gps_tol)]
+    # detect comments, if any are present expose them in the log
+    comm_idx = [idx for idx, line in enumerate(raw_data) if line.startswith("C")]
+    if len(comm_idx) > 0:
+        l_nums = em31_merged["l_num"].to_list()
+        for comment_idx in comm_idx:
+            # CEMSI EM31 data has corrupted lines that get treated as Comments (length 23 starting with C)
+            # so we sneakily try to detect non-integer data (where there absolutely should be int data)
+            try:
+                int(raw_data[comment_idx][13:])
+            except ValueError:
+                continue
+            before, after = get_measurements_before_after_comment(l_nums, comment_idx)
+            LOGGER.info(f"Comment: {raw_data[comment_idx][1:13].strip()!r} data lines: {before, after}")
     return em31_merged
 
 
@@ -204,7 +266,7 @@ def interpolate_gps(gps_df, projected_crs=3413, resample_freq_seconds=1e-3):
     return interp_df.reset_index()
 
 
-def parse_data(text, em_component, instrument, encoding="windows-1252"):
+def parse_data(text, em_component, instrument, encoding="latin-1"):
     """
     Given a line of EM31 measurement data and the desired component, extract some information
     """
@@ -215,9 +277,15 @@ def parse_data(text, em_component, instrument, encoding="windows-1252"):
     # measurement data
     # NB: in the H31 manual there is a gap between reading1 and reading2
     # but in the example H31 provided by Marios there is no gap
-    meas_read1 = float(text[2:7])
-    meas_read2 = float(text[7:12])
-    meas_time = int(text[13:23])
+    try:
+        meas_read1 = float(text[2:7])
+        meas_read2 = float(text[7:12])
+        meas_time = int(text[13:23])
+    except ValueError:
+        # in R31 provided by CEMSI partners, some strange 
+        # characters interrupt instrument data so we skip 
+        # those rows
+        return (pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA)
     # based on the manual, there are several multiplication factors
     # depending on the em components and flags in the data
     if em_component == "both":
@@ -265,12 +333,12 @@ def extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument,
     Given an in-memory list of raw EM31 data, attempt to parse the sensor measurement data
 
     input:
-        raw_data: list of data lines from R31 data file
+        raw_data: list of data lines from R31/H31 data file
         epoch_ms: datalogger epoch referencing start-of-data-recording (?)
         epoch_ts: datalogger timestamp (computer time) at point of epoch_ms (?)
         em_component: the chosen em31 surveying mode ("both", "inphase" or "conductivity")
-        instrument: if EM31-SH, additional multiplcation factor needed
-        encoding: file encoding (default "windows-1252")
+        instrument: if EM31-SH, additional multiplication factor needed
+        encoding: needed for converting text chars into bits in parse_data()
     output:
         meas_df: Pandas dataframe containing the parsed data
     """
@@ -278,32 +346,44 @@ def extract_measurements(raw_data, epoch_ms, epoch_ts, em_component, instrument,
     # NB: "T" works for "auto" mode, but manual mode can include a "2"
     meas_idx = [idx for idx, line in enumerate(raw_data) if line.startswith("T")]
     meas_data = np.array(
-        [parse_data(raw_data[idx], em_component, instrument, encoding=encoding) for idx in meas_idx]
+        [parse_data(raw_data[idx], em_component, instrument, encoding) for idx in meas_idx]
     )
     meas_df = pd.DataFrame(
         data={
-            "l_num": pd.Series(meas_idx, dtype="uint32"),
-            "time_ms": pd.Series(meas_data[:, 0]).astype("uint32"),
-            "flags": pd.Series(meas_data[:, 1]).astype(pd.StringDtype()),
-            "range2": pd.Series(meas_data[:, 2]).astype("uint32"),
-            "range3": pd.Series(meas_data[:, 3]).astype("uint32"),
-            "c_factor": pd.Series(meas_data[:, 4]).astype("float32"),
-            "appcond": pd.Series(meas_data[:, 5]).astype("float32"),
-            "inph": pd.Series(meas_data[:, 6]).astype("float32"),
+            "l_num": pd.Series(meas_idx, dtype=PD_UINT32) + 1,          # we +1 here because of zero-indexing
+            "time_ms": pd.Series(meas_data[:, 0], dtype=PD_UINT32),
+            "flags": pd.Series(meas_data[:, 1], dtype=PD_STR),
+            "range2": pd.Series(meas_data[:, 2], dtype=PD_UINT32),
+            "range3": pd.Series(meas_data[:, 3], dtype=PD_UINT32),
+            "c_factor": pd.Series(meas_data[:, 4], dtype=PD_FLOAT32),
+            "appcond": pd.Series(meas_data[:, 5], dtype=PD_FLOAT32),
+            "inph": pd.Series(meas_data[:, 6], dtype=PD_FLOAT32),
         }
     )
+    # drop any malformed measurement data (except for appcond which might be truthfully NaN)
+    n_nan_meas = len(meas_df.loc[pd.isna(meas_df["time_ms"])])
+    if n_nan_meas > 0:
+        LOGGER.warning(f"Identified {n_nan_meas} malformed data rows. Dropping from final dataframe.")
+        meas_df = meas_df.dropna(subset=["time_ms", "flags", "range2", "range3", "c_factor", "inph"]).reset_index(drop=True)
     # Create measurement time stamps
     meas_df["time_relative"] = meas_df["time_ms"] - epoch_ms
-    meas_df["time_ds"] = epoch_ts
-    meas_df["time_ds"] += pd.Series(
-        [timedelta(milliseconds=rel) for rel in meas_df["time_relative"]]
+    meas_df["time_ds"] = epoch_ts + pd.Series(
+        [pd.Timedelta(milliseconds=float(rel)) for rel in meas_df["time_relative"]]
     )
+    # in the CEMSI R31, there are very strange "time_relative" entries that are unsorted?
+    # we identify any negative timestamp diffs in sequential measurement rows and drop the offending row
+    tdiffs = meas_df['time_ds'].shift(-1) - meas_df['time_ds']
+    anomalous_tdiffs = tdiffs.loc[tdiffs < '00:00:00']
+    # WALRUS OPERATOR YEAH!
+    if (n_anomalous_tdiffs := len(anomalous_tdiffs)) > 0:
+        LOGGER.warning(f"Identified {n_anomalous_tdiffs} malformed (negative tdelta in sequential rows) timestamps. Dropping from final dataframe")
+        meas_df = meas_df.drop(anomalous_tdiffs.index).reset_index(drop=True)
     return meas_df
 
 
 def parse_gps(gps_data, idx_of_em31):
     """
-    Given a cleaned line of EM31 GPS data and its line number in the EM31 datafile, return a NMEA0183 sentence object
+    Given a "cleaned" line of EM31 GPS data and its line number in the EM31 datafile, return a NMEA0183 sentence object
 
     input:
         gps_data: single line of NMEA0183 GPS data
@@ -314,17 +394,30 @@ def parse_gps(gps_data, idx_of_em31):
     try:
         gps_msg = pynmea2.parse(gps_data)
     except pynmea2.ChecksumError:
-        LOGGER.warning("NMEA0183 checksum error with line %d" % idx_of_em31)
-        LOGGER.debug("%r" % gps_data)
+        LOGGER.warning(f"NMEA0183 checksum error with line {idx_of_em31}")
+        LOGGER.debug(f"{gps_data!r}")
         return
     except pynmea2.ParseError:
-        LOGGER.warning("NMEA0183 parse error with line %d" % idx_of_em31)
-        LOGGER.debug("%r" % gps_data)
+        LOGGER.warning(f"NMEA0183 parse error with line {idx_of_em31}")
+        LOGGER.debug(f"{gps_data!r}")
         return
+    try:
+        if not gps_msg.is_valid:
+            LOGGER.warning(f"NMEA0183 validation failure with line {idx_of_em31}")
+            LOGGER.debug(f"{gps_data!r}")
+            return
+        elif not gps_msg.latitude:
+            # apparently .is_valid does not trigger False when msg.latitude = "N"
+            return
+    except ValueError: # apparently .is_valid can trigger ValueError instead of just returning False?!
+        LOGGER.warning(f"NMEA0183 validation failure with line {idx_of_em31}")
+        LOGGER.debug(f"{gps_data!r}")        
+        return
+    except AttributeError: # apparently not all NMEA0183 objects have .is_valid attr?!
+        pass
     return gps_msg
 
 
-# TODO interpolate the GPS data instead of taking nearest
 def extract_gps(raw_data, epoch_ms, epoch_ts):
     """
     Extract the GPS information from a given EM31 dataset
@@ -339,20 +432,52 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
     # detect where the GPS data chunks are in the EM31 data file
     gps_starts = [idx for idx, line in enumerate(raw_data) if line.startswith("@")]
     gps_ends = [idx for idx, line in enumerate(raw_data) if line.startswith("!")]
-    assert len(gps_starts) == len(gps_ends)
-    # gps messages can vary in length but are no longer than 6
-    gps_data = [raw_data[start:end] for start, end in zip(gps_starts, gps_ends)]
+    try:
+        assert len(gps_starts) == len(gps_ends)
+        # extract only the gps messages from the data file contents
+        gps_data = [raw_data[start:end] for start, end in zip(gps_starts, gps_ends)]
+    except AssertionError:
+        LOGGER.warning(f"N of GPS message-start chars ({len(gps_starts)}) does not equal N of GPS message-end chars ({len(gps_ends)}). Attempting to recover...")
+        # we use the smaller of the two sizes, because it seems likely we would have to drop the data from the larger size anyway
+        gps_data = []
+        if len(gps_starts) > len(gps_ends):
+            gps_starts = []
+            for end_idx in gps_ends[:]:
+                # walk backwards in raw_data from current end_idx, looking for gps_start char
+                for line in raw_data[:end_idx][::-1]:
+                    if line.startswith("@"):
+                        chunk = raw_data[raw_data.index(line):end_idx]
+                        # we don't even want to try recovering if the gps chunk isn't less than expected length
+                        if len(chunk) <= 6:
+                            gps_data.append(chunk)
+                            # NB: this assumes <line> only shows up once in the entire datafile
+                            gps_starts.append(raw_data.index(line))
+                        else:
+                            _ = gps_ends.pop(gps_ends.index(end_idx))
+                        break
+        else:
+            gps_ends = []
+            for start_idx in gps_starts[:]:
+                # walk forwards in raw_data from current start_idx, looking for gps_end char
+                for line in raw_data[start_idx:]:
+                    if line.startswith("!"):
+                        chunk = raw_data[start_idx:raw_data.index(line)]
+                        # we don't even want to try recovering if the gps chunk isn't less than expected length
+                        if len(chunk) <= 6:
+                            gps_data.append(chunk)
+                            # NB: this assumes <line> only shows up once in the entire datafile
+                            gps_ends.append(raw_data.index(line))
+                        else:
+                            _ = gps_starts.pop(gps_starts.index(start_idx))
+                        break
     # detect where EM31 measurements have been logged inside GPS messages
     bad_logs_idx = [
         gps_data.index(data)
         for data in gps_data
-        if any([line.startswith("T") for line in data])
+        if any(line.startswith("T") for line in data)
     ]
     if len(bad_logs_idx) != 0:
-        LOGGER.debug(
-            "Detected %d instances where EM31 data overrides GPS data"
-            % len(bad_logs_idx)
-        )
+        LOGGER.warning(f"Detected {len(bad_logs_idx)} instances where EM31 data overrides GPS data")
         for bad_idx in bad_logs_idx:
             em31_line_idx = [
                 gps_data[bad_idx].index(line)
@@ -362,11 +487,21 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
             # remove the em31 data from gps_data by pop-from-list
             for line_idx in em31_line_idx:
                 _ = gps_data[bad_idx].pop(line_idx)
-    assert all([len(data) <= 6 for data in gps_data])
-    gps_times = [int(raw_data[end : end + 1][0].split(" ")[-1]) for end in gps_ends]
+    # gps messages can vary in length but are never longer than 6 lines according to documentation
+    assert all(len(data) <= 6 for data in gps_data)
+    # grab the sys-time immediately after each gps message
+    gps_times = []
+    for end_idx, end in enumerate(gps_ends[:]):
+        try:
+            gps_times.append(int(raw_data[end : end + 1][0].split(" ")[-1]))
+        except ValueError:
+            # ignore the malformed gps_time and drop the data from other gps lists too
+            for l in [gps_starts, gps_ends, gps_data]:
+                _ = l.pop(end_idx)
     # drop the first character in each line and join the remainder chunks into 1 string
     gps_data_clean = ["".join([d[1:] for d in data]).strip() for data in gps_data]
     # extract NMEA0183 objects
+    # NB: any invalid parsed-NMEA-objects will be silently ignored in later steps
     nmea = [
         parse_gps(clean_string, em31_idx)
         for clean_string, em31_idx in zip(gps_data_clean, gps_starts)
@@ -374,6 +509,9 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
     # we only want GGA NMEA messages apparently (Time, position, and fix related data)
     # https://receiverhelp.trimble.com/alloy-gnss/en-us/NMEA-0183messages_GGA.html
     gga_idx = [idx for idx in range(len(nmea)) if isinstance(nmea[idx], pynmea2.GGA)]
+    # if no GGA NMEA messages in data file, raise error
+    if len(gga_idx) == 0:
+        raise EM31GPSError("No valid GPS positioning data ($GNGGA) detected in file. Aborting...")
     gga_msgs = [nmea[idx] for idx in gga_idx]
     # need to add the gps_time to the epoch from EM31 header
     gga_times = [
@@ -403,10 +541,7 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
         assert len(rmc_idx) == len(gga_idx)
         use_rmc = True
     except AssertionError:
-        LOGGER.warning(
-            "n_RMC (%d) does not equal n_GGA (%d) -> omitting sog/cmg from output"
-            % (len(rmc_idx), len(gga_msgs))
-        )
+        LOGGER.warning(f"n_RMC ({len(rmc_idx)}) does not equal n_GGA ({len(gga_msgs)}) -> omitting sog/cmg from output")
         use_rmc = False
     if use_rmc:
         rmc_msgs = [nmea[idx] for idx in rmc_idx]
@@ -421,7 +556,7 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
                         msg.timestamp.minute,
                         msg.timestamp.second,
                         msg.timestamp.microsecond,
-                        tzinfo=timezone.utc,  # always UTC according to Trimble
+                        tzinfo=UTC,  # always UTC according to Trimble
                     ),
                     msg.status,
                     msg.latitude,
@@ -439,29 +574,29 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
             ]
         )
     # edge cases where some gps message contents are empty
-    # nsats
+    # nsats replace with 00
     gga_data[:, 3] = np.where(gga_data[:, 3] == "", "00", gga_data[:, 3])
-    # hdop
+    # hdop replace with NaN
     gga_data[:, 4] = np.where(gga_data[:, 4] == "", np.nan, gga_data[:, 4])
     gps_df = pd.DataFrame(
         data={
-            "time_sys": pd.Series(gga_data[:, 0]).astype("datetime64[ns]"),
+            "time_sys": pd.to_datetime(gga_data[:, 0]).astype("datetime64[ns]"),
             "time_gps": pd.Series(gga_data[:, 1]),
-            "fix": pd.Series(gga_data[:, 2]).astype("uint8"),
-            "nsats": pd.Series(gga_data[:, 3]).astype("uint16"),
-            "hdop": pd.Series(gga_data[:, 4]).astype("float32"),
-            "alt": pd.Series(gga_data[:, 5]).astype("float32"),
-            "lat": pd.Series(gga_data[:, 6]).astype("float64"),
-            "lat_dir": pd.Series(gga_data[:, 7]).astype(pd.StringDtype()),
-            "lon": pd.Series(gga_data[:, 8]).astype("float64"),
-            "lon_dir": pd.Series(gga_data[:, 9]).astype(pd.StringDtype()),
+            "fix": pd.Series(gga_data[:, 2], dtype=PD_UINT8),
+            "nsats": pd.Series(gga_data[:, 3], dtype=PD_UINT16),
+            "hdop": pd.Series(gga_data[:, 4], dtype=PD_FLOAT32),
+            "alt": pd.Series(gga_data[:, 5], dtype=PD_FLOAT32),
+            "lat": pd.Series(gga_data[:, 6], dtype=PD_FLOAT64),
+            "lat_dir": pd.Series(gga_data[:, 7], dtype=PD_STR),
+            "lon": pd.Series(gga_data[:, 8], dtype=PD_FLOAT64),
+            "lon_dir": pd.Series(gga_data[:, 9], dtype=PD_STR),
         }
     )
     # return only a subset of columns based on Josh's prior work
     cols = ["lat", "lon", "time_gps", "time_sys"]
     if use_rmc:
-        gps_df["sog"] = pd.Series(rmc_data[:, 6]).astype("float32")
-        gps_df["cmg"] = pd.Series(rmc_data[:, 7]).astype("float32")
+        gps_df["sog"] = pd.Series(rmc_data[:, 6], dtype=PD_FLOAT32)
+        gps_df["cmg"] = pd.Series(rmc_data[:, 7], dtype=PD_FLOAT32)
         cols.extend(["sog", "cmg"])
     # isolate only the records with 0 < gps_quality < 6
     # different types of GGA quality indicators: https://receiverhelp.trimble.com/alloy-gnss/en-us/NMEA-0183messages_GGA.html
@@ -469,30 +604,37 @@ def extract_gps(raw_data, epoch_ms, epoch_ts):
     return subset
 
 
-def thickness(em31_df, inst_height, coeffs=HAAS_2017):
+def thickness(app_cond, inst_height, intercept=HAAS_2017_INTERCEPT, amplitude=HAAS_2017_AMPLITUDE, change_rate=HAAS_2017_CHANGE_RATE):
     """
-    Estimate total thickness from apparent conductivity
+    Estimate total thickness from apparent conductivity applied through transformation equation
+    discussed in Haas et al 1997 http://hdl.handle.net/10013/epic.11729.d001
+
+    apparent_conductivity = intercept + amplitude * exp(change_rate * ice_thickness)
+
+    Since we have observations for apparent_conductivity, we invert the above equation to 
+    calculate thickness (accounting for instrument height above surface)
+
+    ice_thickness = (log((apparent_conductivity - intercept) / amplitude) / change_rate) - inst_height
 
     input:
-        em31_df: pyEM31 dataframe
-        inst_height: height of the instrument above the snow surface (meters?)
-        coeffs: 3 element list of retrieval coefficients
-    output:
-        em31_df: pyEM31 dataframe with total thickness
+        app_cond: apparent conductivity from EM31 instrument (appcond column from em31 dataframe)
+        inst_height: height of the instrument above the surface (meters)
+        intercept: the baseline conductivity with no ice present (default use HAAS_2017)
+        amplitude: amount by which conductivity changes due to presence of ice (default use HAAS_2017)
+        change_rate: rate at which conductivity changes with changes in ice thickness (default use HAAS_2017)
 
-    TODO: instead of passing dataframe and modifying, take apparent conductivity as input and produce
-    thickness as output
-    TODO: instead of list of coefficients, split into separate variables for readability
-    """
+    output:
+        ice_thickness: ice thickness estimates inverted via EM31-observed apparent conductivity
+    """    
     # modify the instrument measurements using the coefficients
-    mod_app_cond = (em31_df["appcond"] - coeffs[1]) / coeffs[2]
-    # fill negative values with np.nan to avoid np.log warnings
+    mod_app_cond = (app_cond - intercept) / amplitude
+    # fill negative apparent conductivity with np.nan to avoid np.log warnings
     mod_app_cond[mod_app_cond < 0] = np.nan
     # estimate total thickness from instrument
-    em31_df["ttem"] = -1 / coeffs[0] * np.log(mod_app_cond)
-    # account for instrument height above snow surface
-    em31_df["ttem"] -= inst_height
-    return em31_df
+    ice_thickness = np.log(mod_app_cond) / change_rate
+    # adjust thickness for instrument height above surface
+    ice_thickness -= inst_height
+    return ice_thickness
 
 
 if __name__ == "__main__":
@@ -509,20 +651,21 @@ if __name__ == "__main__":
         )
     )
     LOGGER.addHandler(console_log)
-    LOGGER.setLevel(logging.INFO)
+    LOGGER.setLevel(logging.DEBUG)
 
     src_dir = Path("./data/em31")
     dst_dir = Path("./data/output")
     src_dir.mkdir(exist_ok=True)
     dst_dir.mkdir(exist_ok=True)
-    for data_file in sorted(src_dir.glob("???????*.?31")):
+    for data_file in sorted(src_dir.rglob("???????*.?31")):
         target = dst_dir / f"{data_file.stem}.ttem.csv"
         if target.exists():
-            LOGGER.info("Skipping existing file: %s" % target.as_posix())
+            LOGGER.info(f"Skipping existing file: {target.resolve()}")
             continue
         data_size_MB = data_file.stat().st_size / 1024**2
-        LOGGER.info("Processing %s (~%.2f MB)" % (data_file.as_posix(), data_size_MB))
+        LOGGER.info(f"Processing {data_file.resolve()} (~{data_size_MB:.2f} MB)")
         df = read_data(data_file)
-        df = thickness(df, 0.15)
+        LOGGER.info("Calculating ice thickness using default HAAS_2017 coefficients")
+        df['thickness_HAAS2017'] = thickness(df['appcond'], 0.15)
         df.to_csv(target, index=False, na_rep="NaN")
-        LOGGER.info("Saved to CSV: %s" % target.as_posix())
+        LOGGER.info(f"Saved to CSV: {target.resolve()}")

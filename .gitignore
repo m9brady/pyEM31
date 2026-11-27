@@ -154,9 +154,11 @@ cython_debug/
 # MacOS
 .DS_Store
 
-# EM31 data
+# data
+*.H31
 *.R31
 *.csv
 *.dat
 *.gpkg
 *.pdf
+data/reach
